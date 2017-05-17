@@ -19,11 +19,6 @@ import:
   - terror
   - util/charset
   - util/types
-- package: github.com/siddontang/go
-  version: 354e14e6c093c661abb29fd28403b3c19cff5514
-  subpackages:
-  - ioutil2
-  - sync2
 - package: golang.org/x/net
   version: e90d6d0afc4c315a0d87a568ae68577cc15149a0
   subpackages:
@@ -72,7 +67,7 @@ import:
 - package: github.com/satori/go.uuid
   version: ^1.1.0
 - package: github.com/siddontang/go
-  version: 354e14e6c093c661abb29fd28403b3c19cff5514
+  version: cb568a3e5cc06256f91a2da5a87455f717eb33f4
   subpackages:
   - hack
   - ioutil2
