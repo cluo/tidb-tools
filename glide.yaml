@@ -19,11 +19,6 @@ import:
   - terror
   - util/charset
   - util/types
-- package: github.com/siddontang/go-mysql
-  version: c613854ad91bd232088dffa070efd4d022fc3152
-  subpackages:
-  - mysql
-  - replication
 - package: github.com/siddontang/go
   version: 354e14e6c093c661abb29fd28403b3c19cff5514
   subpackages:
@@ -83,7 +78,7 @@ import:
   - ioutil2
   - sync2
 - package: github.com/siddontang/go-mysql
-  version: c613854ad91bd232088dffa070efd4d022fc3152
+  version: e83b1664b8fc96202159841d0a1306160fc3f859
   subpackages:
   - client
   - mysql

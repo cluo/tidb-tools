@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -39,11 +40,23 @@ type BinlogSyncerConfig struct {
 	// If not set, use os.Hostname() instead.
 	Localhost string
 
+	// Charset is for MySQL client character set
+	Charset string
+
 	// SemiSyncEnabled enables semi-sync or not.
 	SemiSyncEnabled bool
 
-	// RawModeEanbled is for not parsing binlog event.
-	RawModeEanbled bool
+	// RawModeEnabled is for not parsing binlog event.
+	RawModeEnabled bool
+
+	// If not nil, use the provided tls.Config to connect to the database using TLS/SSL.
+	TLSConfig *tls.Config
+
+	// Use replication.Time structure for timestamp and datetime.
+	// We will use Local location for timestamp and UTC location for datatime.
+	ParseTime bool
+
+	LogLevel string
 }
 
 // BinlogSyncer syncs binlog event from server.
@@ -68,14 +81,19 @@ type BinlogSyncer struct {
 
 // NewBinlogSyncer creates the BinlogSyncer with cfg.
 func NewBinlogSyncer(cfg *BinlogSyncerConfig) *BinlogSyncer {
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = "info"
+	}
+	log.SetLevelByString(cfg.LogLevel)
+
 	log.Infof("create BinlogSyncer with config %v", cfg)
 
 	b := new(BinlogSyncer)
 
 	b.cfg = cfg
 	b.parser = NewBinlogParser()
-	b.parser.SetRawMode(b.cfg.RawModeEanbled)
-
+	b.parser.SetRawMode(b.cfg.RawModeEnabled)
+	b.parser.SetParseTime(b.cfg.ParseTime)
 	b.running = false
 	b.ctx, b.cancel = context.WithCancel(context.Background())
 
@@ -129,9 +147,14 @@ func (b *BinlogSyncer) registerSlave() error {
 
 	log.Infof("register slave for master server %s:%d", b.cfg.Host, b.cfg.Port)
 	var err error
-	b.c, err = client.Connect(fmt.Sprintf("%s:%d", b.cfg.Host, b.cfg.Port), b.cfg.User, b.cfg.Password, "")
+	b.c, err = client.Connect(fmt.Sprintf("%s:%d", b.cfg.Host, b.cfg.Port), b.cfg.User, b.cfg.Password, "", func(c *client.Conn) {
+		c.TLSConfig = b.cfg.TLSConfig
+	})
 	if err != nil {
 		return errors.Trace(err)
+	}
+	if len(b.cfg.Charset) != 0 {
+	    b.c.SetCharset(b.cfg.Charset)
 	}
 
 	//for mysql 5.6+, binlog has a crc32 checksum
@@ -157,6 +180,15 @@ func (b *BinlogSyncer) registerSlave() error {
 			// 	return errors.Trace(err)
 			// }
 
+		}
+	}
+
+	if b.cfg.Flavor == MariaDBFlavor {
+		// Refer https://github.com/alibaba/canal/wiki/BinlogChange(MariaDB5&10)
+		// Tell the server that we understand GTIDs by setting our slave capability
+		// to MARIA_SLAVE_CAPABILITY_GTID = 4 (MariaDB >= 10.0.1).
+		if _, err := b.c.Execute("SET @mariadb_slave_capability=4"); err != nil {
+			return errors.Errorf("failed to set @mariadb_slave_capability=4: %v", err)
 		}
 	}
 
@@ -332,12 +364,6 @@ func (b *BinlogSyncer) writeBinlogDumpMariadbGTIDCommand(gset GTIDSet) error {
 	// Copy from vitess
 
 	startPos := gset.String()
-
-	// Tell the server that we understand GTIDs by setting our slave capability
-	// to MARIA_SLAVE_CAPABILITY_GTID = 4 (MariaDB >= 10.0.1).
-	if _, err := b.c.Execute("SET @mariadb_slave_capability=4"); err != nil {
-		return errors.Errorf("failed to set @mariadb_slave_capability=4: %v", err)
-	}
 
 	// Set the slave_connect_state variable before issuing COM_BINLOG_DUMP to
 	// provide the start position in GTID form.
@@ -526,8 +552,8 @@ func (b *BinlogSyncer) onStream(s *BinlogStreamer) {
 			log.Info("receive EOF packet, retry ReadPacket")
 			continue
 		default:
-			s.closeWithError(fmt.Errorf("invalid stream header %c", data[0]))
-			return
+			log.Errorf("invalid stream header %c", data[0])
+			continue
 		}
 	}
 }
@@ -543,7 +569,7 @@ func (b *BinlogSyncer) parseEvent(s *BinlogStreamer, data []byte) error {
 		data = data[2:]
 	}
 
-	e, err := b.parser.parse(data)
+	e, err := b.parser.Parse(data)
 	if err != nil {
 		return errors.Trace(err)
 	}

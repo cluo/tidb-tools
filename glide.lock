@@ -1,5 +1,5 @@
-hash: a3a2e2cc4c07f02cc0a30362456ced0ff3784790464ede80fb2ebfd42e796c6a
-updated: 2017-05-15T15:00:18.17653748+08:00
+hash: 656c825fc3b5245bdc64ad6ffd60554bd735aa9d43cce381e2e7e6ee4a26df4a
+updated: 2017-05-17T04:07:14.42079504+08:00
 imports:
 - name: github.com/beorn7/perks
   version: 3ac7bf7a47d159a033b107610db8a1b6575507a4
@@ -119,7 +119,7 @@ imports:
   - ioutil2
   - sync2
 - name: github.com/siddontang/go-mysql
-  version: c613854ad91bd232088dffa070efd4d022fc3152
+  version: e83b1664b8fc96202159841d0a1306160fc3f859
   subpackages:
   - client
   - mysql
