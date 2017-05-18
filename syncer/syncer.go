@@ -560,6 +560,7 @@ func (s *Syncer) run() (err error) {
 		Host:     s.cfg.From.Host,
 		Port:     uint16(s.cfg.From.Port),
 		User:     s.cfg.From.User,
+		LogLevel: s.cfg.LogLevel,
 		Password: s.cfg.From.Password,
 	}
 
