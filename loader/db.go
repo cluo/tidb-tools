@@ -96,12 +96,12 @@ func executeSQLImp(db *sql.DB, sqls []string, skipConstraintCheck bool) error {
 	// If the database has a concept of per-connection state, such state can only be reliably
 	// observed within a transaction.
 	if skipConstraintCheck {
-		_, err = txn.Exec("set @@session.tidb_skip_constraint_check=1;")
+		_, err = txn.Exec("set @@session.tidb_1pc_import=1;")
 	} else {
-		_, err = txn.Exec("set @@session.tidb_skip_constraint_check=0;")
+		_, err = txn.Exec("set @@session.tidb_1pc_import=0;")
 	}
 	if err != nil {
-		log.Errorf("exec set session.tidb_skip_constraint_check failed %v", errors.ErrorStack(err))
+		log.Errorf("exec set session.tidb_1pc_import failed %v", errors.ErrorStack(err))
 		return err
 	}
 
