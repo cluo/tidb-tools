@@ -1,5 +1,5 @@
-hash: 3c3dbe26161da24a6b2c4ae97f5c376a25a1bd95904b8a14229bf21db826ffaf
-updated: 2017-05-17T17:48:26.386605122+08:00
+hash: 112de6c61e562186ae74840236f9364a127909c44c8c9133fe0df535c1272ab3
+updated: 2017-05-20T17:14:05.587993844+08:00
 imports:
 - name: github.com/beorn7/perks
   version: 3ac7bf7a47d159a033b107610db8a1b6575507a4
@@ -7,6 +7,17 @@ imports:
   - quantile
 - name: github.com/BurntSushi/toml
   version: 99064174e013895bbd9b025c31100bd1d9b590ca
+- name: github.com/coreos/etcd
+  version: ea5f6dab6b1d07e22cf46bf5f5088d567548c124
+  subpackages:
+  - auth/authpb
+  - clientv3
+  - clientv3/concurrency
+  - etcdserver/api/v3rpc/rpctypes
+  - etcdserver/etcdserverpb
+  - mvcc/mvccpb
+  - pkg/monotime
+  - pkg/tlsutil
 - name: github.com/go-sql-driver/mysql
   version: 4ac31a97ccff97de60ba3c630bfb4733c1bb6d0e
 - name: github.com/golang/protobuf
@@ -16,6 +27,12 @@ imports:
   - proto
 - name: github.com/golang/snappy
   version: 723cc1e459b8eea2dea4583200fd60757d40097a
+- name: github.com/grpc-ecosystem/grpc-gateway
+  version: 84398b94e188ee336f307779b57b3aa91af7063c
+  subpackages:
+  - runtime
+  - runtime/internal
+  - utilities
 - name: github.com/juju/errors
   version: 6f54ff6318409d31ff16261533ce2c8381a4fd5d
 - name: github.com/matttproud/golang_protobuf_extensions
@@ -44,7 +61,7 @@ imports:
   - leveldb/table
   - leveldb/util
 - name: github.com/pingcap/kvproto
-  version: 0671142ca3dfbdddb4a61e815486834a4695cd02
+  version: 289050a4366f95497c93d4dba068989b5dd8781a
   subpackages:
   - pkg/metapb
   - pkg/pdpb
@@ -53,7 +70,7 @@ imports:
   subpackages:
   - pd-client
 - name: github.com/pingcap/tidb
-  version: 9b8a445aa828ccf4ee2eb08e15fe4e3130108b37
+  version: 2c07a47f229314ac2ccfb78607d218759a77a050
   subpackages:
   - ast
   - context
@@ -87,6 +104,7 @@ imports:
   - util/mvmap
   - util/stringutil
   - util/types
+  - util/types/json
 - name: github.com/pingcap/tipb
   version: 37bbffad21f347c02af7d822909832f0eed39c85
   subpackages:
