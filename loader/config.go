@@ -20,6 +20,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/juju/errors"
+	"github.com/pingcap/tidb-tools/pkg/utils"
 )
 
 // NewConfig creates a new config.
@@ -47,6 +48,7 @@ func NewConfig() *Config {
 	fs.StringVar(&cfg.LogLevel, "L", "info", "Loader log level: debug, info, warn, error, fatal")
 
 	fs.StringVar(&cfg.configFile, "c", "", "config file")
+	fs.BoolVar(&cfg.printVersion, "V", false, "prints version and exit")
 
 	return cfg
 }
@@ -93,6 +95,7 @@ type Config struct {
 
 	configFile          string
 	SkipConstraintCheck int `toml:"skip-unique-check" json:"skip-unique-check"`
+	printVersion        bool
 
 	RouteRules []*RouteRule `toml:"route-rules" json:"route-rules"`
 }
@@ -111,6 +114,11 @@ func (c *Config) Parse(arguments []string) error {
 	err := c.FlagSet.Parse(arguments)
 	if err != nil {
 		return errors.Trace(err)
+	}
+
+	if c.printVersion {
+		fmt.Printf(utils.GetRawInfo("loader"))
+		return flag.ErrHelp
 	}
 
 	// Load config file if specified.
