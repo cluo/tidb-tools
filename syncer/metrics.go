@@ -112,7 +112,7 @@ func getBinlogIndex(filename string) float64 {
 
 	idx, err := strconv.ParseFloat(idxStr, 64)
 	if err != nil {
-		log.Warnf("[syncer] parse binlog index %s, error %s", filename, err.Error())
+		log.Warnf("[syncer] parse binlog index %s, error %s", filename, err)
 		return 0
 	}
 	return idx
@@ -122,7 +122,7 @@ func masterGTIDGauge(gtids map[string]string) {
 	for uuid, gtid := range gtids {
 		set, err := mysql.ParseUUIDSet(gtid)
 		if err != nil {
-			log.Warnf("[syncer] parse uuid set error:%s, gtid:%s", err.Error(), gtid)
+			log.Warnf("[syncer] parse uuid set error:%s, gtid:%s", err, gtid)
 			continue
 		}
 		if len(set.Intervals) == 0 {

@@ -214,13 +214,14 @@ func (s *testSyncerSuite) TestSelectTable(c *C) {
 				continue
 			}
 
-			querys, ok, err := resolveDDLSQL(query)
-			if !ok {
-				continue
-			}
+			querys, err := resolveDDLSQL(query)
 			if err != nil {
 				log.Fatalf("ResolveDDlSQL failed %v", err)
 			}
+			if len(querys) == 0 {
+				continue
+			}
+			log.Debugf("querys:%+v", querys)
 			for j, q := range querys {
 				r := syncer.skipQueryDDL(q, string(ev.Schema))
 				c.Assert(r, Equals, res[i][j])
@@ -363,13 +364,14 @@ func (s *testSyncerSuite) TestIgnoreTable(c *C) {
 				continue
 			}
 
-			querys, ok, err := resolveDDLSQL(query)
-			if !ok {
-				continue
-			}
+			querys, err := resolveDDLSQL(query)
 			if err != nil {
 				log.Fatalf("ResolveDDlSQL failed %v", err)
 			}
+			if len(querys) == 0 {
+				continue
+			}
+
 			for j, q := range querys {
 				r := syncer.skipQueryDDL(q, string(ev.Schema))
 				c.Assert(r, Equals, res[i][j])

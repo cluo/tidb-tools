@@ -731,14 +731,13 @@ func (s *Syncer) run() (err error) {
 		case *replication.QueryEvent:
 			binlogEventsTotal.WithLabelValues("query").Inc()
 
-			ok := false
 			sql := string(ev.Query)
 
 			lastPos := pos
 			pos.Pos = e.Header.LogPos
 			log.Debugf("[query]%s, [next pos]%v", sql, pos)
 
-			sqls, ok, err := resolveDDLSQL(sql)
+			sqls, err := resolveDDLSQL(sql)
 			if err != nil {
 				if s.skipQueryEvent(sql, string(ev.Schema)) {
 					binlogSkippedEventsTotal.WithLabelValues("query").Inc()
@@ -746,10 +745,6 @@ func (s *Syncer) run() (err error) {
 					continue
 				}
 				return errors.Errorf("parse query event failed: %v, position %v", err, pos)
-			}
-
-			if !ok {
-				continue
 			}
 
 			for _, sql := range sqls {
@@ -883,7 +878,7 @@ func (s *Syncer) printStatus() {
 					if isAccessDeniedError(err) {
 						s.lackOfReplClientPrivilege = true
 					}
-					log.Errorf("[syncer] get master status error %s", err.Error())
+					log.Errorf("[syncer] get master status error %s", err)
 				} else {
 					binlogPos.WithLabelValues("master").Set(float64(masterPos.Pos))
 					binlogFile.WithLabelValues("master").Set(getBinlogIndex(masterPos.Name))

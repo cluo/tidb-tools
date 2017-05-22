@@ -424,16 +424,16 @@ func isDDLSQL(sql string) (bool, error) {
 
 // resolveDDLSQL resolve to one ddl sql
 // example: drop table test.a,test2.b -> drop table test.a; drop table test2.b;
-func resolveDDLSQL(sql string) (sqls []string, ok bool, err error) {
+func resolveDDLSQL(sql string) (sqls []string, err error) {
 	stmt, err := parser.New().ParseOneStmt(sql, "", "")
 	if err != nil {
-		log.Errorf("error while parsing sql: %s", sql)
-		return nil, false, errors.Trace(err)
+		log.Errorf("error while parsing sql: %s, err:%s", sql, err)
+		return nil, errors.Trace(err)
 	}
 
 	_, isDDL := stmt.(ast.DDLNode)
 	if !isDDL {
-		sqls = append(sqls, sql)
+		// let sqls be empty
 		return
 	}
 
@@ -457,17 +457,19 @@ func resolveDDLSQL(sql string) (sqls []string, ok bool, err error) {
 			sqls = append(sqls, sql)
 			break
 		}
-		log.Warnf("will split alter table statemet: %v", sql)
+
+		newTable := &ast.TableName{}
+		log.Warnf("will split alter table statement: %v", sql)
 		for i := range tempSpecs {
 			v.Specs = tempSpecs[i : i+1]
-			sql1 := alterTableStmtToSQL(v)
+			sql1 := alterTableStmtToSQL(v, newTable)
 			log.Warnf("splitted alter table statement: %s", sql1)
 			sqls = append(sqls, sql1)
 		}
 	default:
 		sqls = append(sqls, sql)
 	}
-	return sqls, true, nil
+	return sqls, nil
 }
 
 func genDDLSQL(sql string, schema string) (string, error) {
