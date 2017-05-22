@@ -70,7 +70,7 @@ func executeSQL(conn *Conn, sqls []string, enableRetry bool, skipConstraintCheck
 			skipConstraintCheck = false
 		}
 		if err = executeSQLImp(conn.db, sqls, skipConstraintCheck); err != nil {
-			if !isErrDupEntry(err) {
+			if isRetryableError(err) {
 				continue
 			}
 		}
@@ -246,24 +246,26 @@ func closeConns(conns ...*Conn) {
 }
 
 func isErrDBExists(err error) bool {
-	err = causeErr(err)
-	if e, ok := err.(*mysql.MySQLError); ok && e.Number == tmysql.ErrDBCreateExists {
-		return true
-	}
-	return false
+	return isMySQLError(err, tmysql.ErrDBCreateExists)
 }
 
 func isErrTableExists(err error) bool {
-	err = causeErr(err)
-	if e, ok := err.(*mysql.MySQLError); ok && e.Number == tmysql.ErrTableExists {
-		return true
-	}
-	return false
+	return isMySQLError(err, tmysql.ErrTableExists)
 }
 
-func isErrDupEntry(err error) bool {
+func isRetryableError(err error) bool {
+	if isMySQLError(err, tmysql.ErrDupEntry) {
+		return false
+	}
+	if isMySQLError(err, tmysql.ErrDataTooLong) {
+		return false
+	}
+	return true
+}
+
+func isMySQLError(err error, code uint16) bool {
 	err = causeErr(err)
-	if e, ok := err.(*mysql.MySQLError); ok && e.Number == tmysql.ErrDupEntry {
+	if e, ok := err.(*mysql.MySQLError); ok && e.Number == code {
 		return true
 	}
 	return false
