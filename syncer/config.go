@@ -41,6 +41,7 @@ func NewConfig() *Config {
 	fs.StringVar(&cfg.LogRotate, "log-rotate", "day", "log file rotate type, hour/day")
 	fs.BoolVar(&cfg.EnableGTID, "enable-gtid", false, "enable gtid mode")
 	fs.BoolVar(&cfg.AutoFixGTID, "auto-fix-gtid", false, "auto fix gtid while switch mysql master/slave")
+	fs.BoolVar(&safeMode, "safe-mode", false, "enable safe mode to make syncer reentrant")
 
 	return cfg
 }
@@ -157,11 +158,11 @@ func (c Config) String() string {
 	return fmt.Sprintf(`log-level:%s log-file:%s log-rotate:%s status-addr:%s `+
 		`server-id:%d worker-count:%d batch:%d meta-file:%s `+
 		`do-tables:%v do-dbs:%v ignore-tables:%v ignore-dbs:%v `+
-		`from:%s to:%s skip-sqls %v`,
+		`from:%s to:%s skip-sqls %v enable-gtid: %v safe-mode: %v`,
 		c.LogLevel, c.LogFile, c.LogRotate, c.StatusAddr,
 		c.ServerID, c.WorkerCount, c.Batch, c.Meta,
 		c.DoTables, c.DoDBs, c.IgnoreTables, c.IgnoreDBs,
-		c.From, c.To, c.SkipSQLs)
+		c.From, c.To, c.SkipSQLs, c.EnableGTID, safeMode)
 }
 
 // configFromFile loads config from file.

@@ -64,6 +64,7 @@ type Syncer struct {
 
 	done chan struct{}
 	jobs []chan *job
+	c    *causality
 
 	closed sync2.AtomicBool
 
@@ -92,6 +93,7 @@ func NewSyncer(cfg *Config) *Syncer {
 	syncer.done = make(chan struct{})
 	syncer.jobs = newJobChans(cfg.WorkerCount + 1)
 	syncer.tables = make(map[string]*table)
+	syncer.c = newCausality()
 	syncer.ctx, syncer.cancel = context.WithCancel(context.Background())
 	syncer.patternMap = make(map[string]*regexp.Regexp)
 	return syncer
@@ -230,6 +232,7 @@ func (s *Syncer) getTableFromDB(db *sql.DB, schema string, name string) (*table,
 	table := &table{}
 	table.schema = schema
 	table.name = name
+	table.indexColumns = make(map[string][]*column)
 
 	err := s.getTableColumns(db, table)
 	if err != nil {
@@ -341,8 +344,7 @@ func (s *Syncer) getTableIndex(db *sql.DB, table *table) error {
 		| t     |          0 | ucd      |            2 | d           | A         |           0 |     NULL | NULL   | YES  | BTREE      |         |               |
 		+-------+------------+----------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
 	*/
-	var keyName string
-	var columns []string
+	var columns = make(map[string][]string)
 	for rows.Next() {
 		data := make([]sql.RawBytes, len(rowColumns))
 		values := make([]interface{}, len(rowColumns))
@@ -358,18 +360,10 @@ func (s *Syncer) getTableIndex(db *sql.DB, table *table) error {
 
 		nonUnique := string(data[1])
 		if nonUnique == "0" {
-			if keyName == "" {
-				keyName = string(data[2])
-			} else {
-				if keyName != string(data[2]) {
-					break
-				}
-			}
-
-			columns = append(columns, string(data[4]))
+			keyName := string(data[2])
+			columns[keyName] = append(columns[keyName], string(data[4]))
 		}
 	}
-
 	if rows.Err() != nil {
 		return errors.Trace(rows.Err())
 	}
@@ -456,6 +450,7 @@ func (s *Syncer) addJob(job *job) error {
 	wait := s.checkWait(job)
 	if wait {
 		s.jobWg.Wait()
+		s.c.reset()
 	}
 
 	err := s.meta.Save(job.pos, "", "", wait)
@@ -678,7 +673,7 @@ func (s *Syncer) run() (err error) {
 			log.Debugf("schema: %s, table %s, RowsEvent data: %v", table.schema, table.name, ev.Rows)
 			var (
 				sqls []string
-				keys []string
+				keys [][]string
 				args [][]interface{}
 			)
 			switch e.Header.EventType {
@@ -691,8 +686,7 @@ func (s *Syncer) run() (err error) {
 				}
 
 				for i := range sqls {
-					job := newJob(insert, sqls[i], args[i], keys[i], true, pos)
-					err = s.addJob(job)
+					err = s.commitJob(insert, sqls[i], args[i], keys[i], true, pos)
 					if err != nil {
 						return errors.Trace(err)
 					}
@@ -706,8 +700,7 @@ func (s *Syncer) run() (err error) {
 				}
 
 				for i := range sqls {
-					job := newJob(update, sqls[i], args[i], keys[i], true, pos)
-					err = s.addJob(job)
+					err = s.commitJob(update, sqls[i], args[i], keys[i], true, pos)
 					if err != nil {
 						return errors.Trace(err)
 					}
@@ -721,8 +714,7 @@ func (s *Syncer) run() (err error) {
 				}
 
 				for i := range sqls {
-					job := newJob(del, sqls[i], args[i], keys[i], true, pos)
-					err = s.addJob(job)
+					err = s.commitJob(del, sqls[i], args[i], keys[i], true, pos)
 					if err != nil {
 						return errors.Trace(err)
 					}
@@ -795,6 +787,33 @@ func (s *Syncer) run() (err error) {
 			binlogGTID.WithLabelValues("syncer", u.String()).Set(float64(ev.GNO))
 		}
 	}
+}
+
+func (s *Syncer) commitJob(tp opType, sql string, args []interface{}, keys []string, retry bool, pos mysql.Position) error {
+	key, err := s.resolveCasuality(keys)
+	if err != nil {
+		return errors.Errorf("resolve karam error %v", err)
+	}
+	job := newJob(tp, sql, args, key, retry, pos)
+	err = s.addJob(job)
+	return errors.Trace(err)
+}
+
+func (s *Syncer) resolveCasuality(keys []string) (string, error) {
+	if s.c.detectConflict(keys) {
+		if err := s.flushJobs(); err != nil {
+			return "", errors.Trace(err)
+		}
+		s.c.reset()
+	}
+	if err := s.c.add(keys); err != nil {
+		return "", errors.Trace(err)
+	}
+	var key string
+	if len(keys) > 0 {
+		key = keys[0]
+	}
+	return s.c.get(key), nil
 }
 
 func (s *Syncer) genRegexMap() {
