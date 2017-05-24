@@ -3,7 +3,10 @@ LDFLAGS += -X "github.com/pingcap/tidb-tools/pkg/utils.Version=1.0.0~rc2+git.$(s
 LDFLAGS += -X "github.com/pingcap/tidb-tools/pkg/utils.BuildTS=$(shell date -u '+%Y-%m-%d %I:%M:%S')"
 LDFLAGS += -X "github.com/pingcap/tidb-tools/pkg/utils.GitHash=$(shell git rev-parse HEAD)"
 
-GO := GO15VENDOREXPERIMENT="1" go
+CURDIR   := $(shell pwd)
+GO       := GO15VENDOREXPERIMENT="1" go
+GOTEST   := GOPATH=$(CURDIR)/_vendor:$(GOPATH) CGO_ENABLED=1 $(GO) test
+PACKAGES := $$(go list ./... | grep -vE 'vendor|syncer')
 
 .PHONY: build importer syncer checker loader dump_region test check deps
 
@@ -25,6 +28,8 @@ dump_region:
 	$(GO) build -ldflags '$(LDFLAGS)' -o bin/dump_region ./dump_region
 
 test:
+	@export log_level=error; \
+	$(GOTEST) -cover $(PACKAGES)
 
 check:
 	$(GO) get github.com/golang/lint/golint
@@ -43,4 +48,4 @@ else
 	glide update -s -v -u --skip-test
 endif
 	@echo "removing test files"
-	glide vc --only-code --no-tests
+	glide vc --use-lock-file --only-code --no-tests

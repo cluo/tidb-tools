@@ -1,5 +1,5 @@
-hash: 112de6c61e562186ae74840236f9364a127909c44c8c9133fe0df535c1272ab3
-updated: 2017-05-20T17:14:05.587993844+08:00
+hash: f724aabcc0a79a4e8bab048fcf05cfc1110e909ebb62926c8da08be27dba3372
+updated: 2017-05-24T14:49:32.225449871+08:00
 imports:
 - name: github.com/beorn7/perks
   version: 3ac7bf7a47d159a033b107610db8a1b6575507a4
@@ -45,6 +45,8 @@ imports:
   version: 53be0d36a84c2a886ca057d34b6aa4468df9ccb4
   subpackages:
   - llrb
+- name: github.com/pingcap/check
+  version: 9b266636177e249ec28b0aeffe8e86bc272bb481
 - name: github.com/pingcap/goleveldb
   version: 158edde5a354460121af007d02a00b01c8d03443
   subpackages:
