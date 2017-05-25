@@ -24,6 +24,22 @@ skip-sqls = ["ALTER USER", "CREATE USER"]
 #db-name ="test"
 #tbl-name = "~^a.*"
 
+# skip prefix mathched sqls
+# skip-sqls = ["^ALTER\\s+USER", "^CREATE\\s+USER"]
+
+#[[route-rules]]
+#pattern-schema = "route_*"
+#pattern-table = "abc_*"
+#target-schema = "route"
+#target-table = "abc"
+
+#[[route-rules]]
+#pattern-schema = "route_*"
+#pattern-table = "xyz_*"
+#target-schema = "route"
+#target-table = "xyz"
+
+
 [from]
 host = "127.0.0.1"
 user = "root"

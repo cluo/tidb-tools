@@ -23,6 +23,7 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
+	"github.com/pingcap/tidb-tools/pkg/tableroute"
 	"github.com/satori/go.uuid"
 	"github.com/siddontang/go-mysql/mysql"
 	"github.com/siddontang/go-mysql/replication"
@@ -65,6 +66,8 @@ type Syncer struct {
 	done chan struct{}
 	jobs []chan *job
 	c    *causality
+
+	tableRouter route.TableRouter
 
 	closed sync2.AtomicBool
 
@@ -568,6 +571,10 @@ func (s *Syncer) run() (err error) {
 
 	// support regex
 	s.genRegexMap()
+	err = s.genRouter()
+	if err != nil {
+		return errors.Trace(err)
+	}
 
 	streamer, isGTIDMode, err := s.getBinlogStreamer()
 	if err != nil {
@@ -652,23 +659,24 @@ func (s *Syncer) run() (err error) {
 			log.Infof("rotate binlog to %v", pos)
 		case *replication.RowsEvent:
 			// binlogEventsTotal.WithLabelValues("type", "rows").Add(1)
-
+			//
+			schemaName, tableName := s.renameShardingSchema(string(ev.Table.Schema), string(ev.Table.Table))
 			table := &table{}
-			if s.skipRowEvent(string(ev.Table.Schema), string(ev.Table.Table)) {
+			if s.skipRowEvent(schemaName, tableName) {
 				binlogSkippedEventsTotal.WithLabelValues("rows").Inc()
 				if err = s.recordSkipSQLsPos(insert, pos, gs); err != nil {
 					return errors.Trace(err)
 				}
 
-				log.Warnf("[skip RowsEvent]db:%s table:%s", ev.Table.Schema, ev.Table.Table)
+				log.Warnf("[skip RowsEvent]source-db:%s table:%s; target-db:%s table:%s", ev.Table.Schema, ev.Table.Table, schemaName, tableName)
 				continue
 			}
-			table, err = s.getTable(string(ev.Table.Schema), string(ev.Table.Table))
+			table, err = s.getTable(schemaName, tableName)
 			if err != nil {
 				return errors.Trace(err)
 			}
 
-			log.Debugf("schema: %s, table %s, RowsEvent data: %v", table.schema, table.name, ev.Rows)
+			log.Debugf("source-db:%s table:%s; target-db:%s table:%s, RowsEvent data: %v", ev.Table.Schema, ev.Table.Table, table.schema, table.name, ev.Rows)
 			var (
 				sqls []string
 				keys [][]string
@@ -730,16 +738,20 @@ func (s *Syncer) run() (err error) {
 
 			sqls, err := resolveDDLSQL(sql)
 			if err != nil {
-				if s.skipQueryEvent(sql, string(ev.Schema)) {
+				if s.skipQueryEvent(sql) {
 					binlogSkippedEventsTotal.WithLabelValues("query").Inc()
-					log.Warnf("[skip query-sql]%s [schema]%s", sql, string(ev.Schema))
+					log.Warnf("[skip query-sql]%s  [schema]:%s", sql, ev.Schema)
 					continue
 				}
 				return errors.Errorf("parse query event failed: %v", err)
 			}
 
 			for _, sql := range sqls {
-				if s.skipQueryDDL(sql, string(ev.Schema)) {
+				tableNames, err := s.fetchDDLTableNames(sql, string(ev.Schema))
+				if err != nil {
+					return errors.Trace(err)
+				}
+				if s.skipQueryDDL(sql, tableNames[1]) {
 					binlogSkippedEventsTotal.WithLabelValues("query_ddl").Inc()
 					if err = s.recordSkipSQLsPos(ddl, pos, gs); err != nil {
 						return errors.Trace(err)
@@ -749,7 +761,7 @@ func (s *Syncer) run() (err error) {
 					continue
 				}
 
-				sql, err = genDDLSQL(sql, string(ev.Schema))
+				sql, err = genDDLSQL(sql, tableNames[0], tableNames[1])
 				if err != nil {
 					return errors.Trace(err)
 				}
@@ -815,6 +827,17 @@ func (s *Syncer) resolveCasuality(keys []string) (string, error) {
 		key = keys[0]
 	}
 	return s.c.get(key), nil
+}
+
+func (s *Syncer) genRouter() error {
+	s.tableRouter = route.NewTrieRouter()
+	for _, rule := range s.cfg.RouteRules {
+		err := s.tableRouter.Insert(rule.PatternSchema, rule.PatternTable, rule.TargetSchema, rule.TargertTable)
+		if err != nil {
+			return errors.Trace(err)
+		}
+	}
+	return nil
 }
 
 func (s *Syncer) genRegexMap() {
@@ -989,6 +1012,47 @@ func (s *Syncer) reopen(cfg *replication.BinlogSyncerConfig) (*replication.Binlo
 func (s *Syncer) startSyncByPosition() (*replication.BinlogStreamer, bool, error) {
 	streamer, err := s.syncer.StartSync(s.meta.Pos())
 	return streamer, false, errors.Trace(err)
+}
+
+// the result contains [source TableNames, target TableNames]
+// the detail of TableNames refs `parserDDLTableNames()`
+func (s *Syncer) fetchDDLTableNames(sql string, schema string) ([][]*TableName, error) {
+	tableNames, err := parserDDLTableNames(sql)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	var targetTableNames []*TableName
+	for i := range tableNames {
+		if tableNames[i].Schema == "" {
+			tableNames[i].Schema = schema
+		}
+		schema, table := s.renameShardingSchema(tableNames[i].Schema, tableNames[i].Name)
+		tableName := &TableName{
+			Schema: schema,
+			Name:   table,
+		}
+		targetTableNames = append(targetTableNames, tableName)
+	}
+
+	return [][]*TableName{tableNames, targetTableNames}, nil
+}
+
+func (s *Syncer) renameShardingSchema(schema, table string) (string, string) {
+	schema = strings.ToLower(schema)
+	table = strings.ToLower(table)
+	if schema == "" {
+		return schema, table
+	}
+	targetSchema, targetTable := s.tableRouter.Match(schema, table)
+	if targetSchema == "" {
+		return schema, table
+	}
+	if targetTable == "" {
+		targetTable = table
+	}
+
+	return targetSchema, targetTable
 }
 
 func (s *Syncer) isClosed() bool {

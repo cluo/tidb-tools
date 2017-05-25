@@ -473,54 +473,129 @@ func resolveDDLSQL(sql string) (sqls []string, err error) {
 	return sqls, nil
 }
 
-func genDDLSQL(sql string, schema string) (string, error) {
+// todo: fix the ugly code, use ast to rename table
+func genDDLSQL(sql string, originTableNames []*TableName, targetTableNames []*TableName) (string, error) {
 	stmt, err := parser.New().ParseOneStmt(sql, "", "")
 	if err != nil {
 		return "", errors.Trace(err)
 	}
-	_, isCreateDatabase := stmt.(*ast.CreateDatabaseStmt)
-	if isCreateDatabase {
-		return fmt.Sprintf("%s;", sql), nil
-	}
-	if schema == "" {
-		return fmt.Sprintf("%s;", sql), nil
+
+	switch stmt.(type) {
+	case *ast.CreateDatabaseStmt:
+		if originTableNames[0].Schema == targetTableNames[0].Schema {
+			return sql, nil
+		}
+		sqlPrefix := createDatabaseRegex.FindString(sql)
+		index := findLastWord(sqlPrefix)
+		return createDatabaseRegex.ReplaceAllString(sql, fmt.Sprintf("%s`%s`", sqlPrefix[:index], targetTableNames[0].Schema)), nil
+	case *ast.DropDatabaseStmt:
+		if originTableNames[0].Schema == targetTableNames[0].Schema {
+			return sql, nil
+		}
+		sqlPrefix := dropDatabaseRegex.FindString(sql)
+		index := findLastWord(sqlPrefix)
+		return dropDatabaseRegex.ReplaceAllString(sql, fmt.Sprintf("%s`%s`", sqlPrefix[:index], targetTableNames[0].Schema)), nil
+	case *ast.CreateTableStmt:
+		var (
+			sqlPrefix string
+			index     int
+		)
+		// replace `like schema.table` section
+		if len(originTableNames) == 2 {
+			sqlPrefix = createTableLikeRegex.FindString(sql)
+			index = findLastWord(sqlPrefix)
+			endChars := ""
+			if sqlPrefix[len(sqlPrefix)-1] == ')' {
+				endChars = ")"
+			}
+			sql = createTableLikeRegex.ReplaceAllString(sql, fmt.Sprintf("%s`%s`.`%s`%s", sqlPrefix[:index], targetTableNames[1].Schema, targetTableNames[1].Name, endChars))
+			fmt.Println(sql)
+		}
+		// replce `create table schame.table` section
+		sqlPrefix = createTableRegex.FindString(sql)
+		index = findLastWord(sqlPrefix)
+		endChars := findTableDefineIndex(sqlPrefix[index:])
+		return createTableRegex.ReplaceAllString(sql, fmt.Sprintf("%s`%s`.`%s`%s", sqlPrefix[:index], targetTableNames[0].Schema, targetTableNames[0].Name, endChars)), nil
+	case *ast.DropTableStmt:
+		sqlPrefix := dropTableRegex.FindString(sql)
+		index := findLastWord(sqlPrefix)
+		sql = dropTableRegex.ReplaceAllString(sql, fmt.Sprintf("%s`%s`", sqlPrefix[:index], targetTableNames[0].Name))
+	case *ast.TruncateTableStmt:
+		sql = fmt.Sprintf("TRUNCATE TABLE `%s`", targetTableNames[0].Name)
+	case *ast.AlterTableStmt:
+		// RENAME [TO|AS] new_tbl_name
+		if len(originTableNames) == 2 {
+			index := findLastWord(sql)
+			sql = fmt.Sprintf("%s`%s`.`%s`", sql[:index], targetTableNames[1].Schema, targetTableNames[1].Name)
+		}
+		sql = alterTableRegex.ReplaceAllString(sql, fmt.Sprintf("ALTER TABLE `%s`", targetTableNames[0].Name))
+	case *ast.RenameTableStmt:
+		return fmt.Sprintf("RENAME TABLE `%s`.`%s` TO `%s`.`%s`", targetTableNames[0].Schema, targetTableNames[0].Name,
+			targetTableNames[1].Schema, targetTableNames[1].Name), nil
+	case *ast.CreateIndexStmt, *ast.DropIndexStmt:
+		sql = indexDDLRegex.ReplaceAllString(sql, fmt.Sprintf("ON `%s`", targetTableNames[0].Name))
+	default:
+		return "", errors.Errorf("unkown type ddl %s", sql)
 	}
 
-	return fmt.Sprintf("USE `%s`; %s;", schema, sql), nil
+	return fmt.Sprintf("use `%s`; %s;", targetTableNames[0].Schema, sql), nil
 }
 
-func genTableName(schema string, table string) TableName {
-	return TableName{Schema: schema, Name: table}
+func findTableDefineIndex(literal string) string {
+	for i := range literal {
+		if literal[i] == '(' {
+			return literal[i:]
+		}
+	}
+	return ""
+}
+
+func genTableName(schema string, table string) *TableName {
+	return &TableName{Schema: schema, Name: table}
 
 }
 
-func parserDDLTableName(sql string) (TableName, error) {
+// the result contains [tableName] excepted create table like and rename table
+// for `create table like` DDL, result contains [sourceTableName, sourceRefTableName]
+// for rename table ddl, result contains [targetOldTableName, sourceNewTableName]
+func parserDDLTableNames(sql string) ([]*TableName, error) {
 	stmt, err := parser.New().ParseOneStmt(sql, "", "")
 	if err != nil {
-		return TableName{}, errors.Trace(err)
+		return nil, errors.Trace(err)
 	}
 
-	var res TableName
+	var res []*TableName
 	switch v := stmt.(type) {
 	case *ast.CreateDatabaseStmt:
-		res = genTableName(v.Name, "")
+		res = append(res, genTableName(v.Name, ""))
 	case *ast.DropDatabaseStmt:
-		res = genTableName(v.Name, "")
-	case *ast.CreateIndexStmt:
-		res = genTableName(v.Table.Schema.L, v.Table.Name.L)
+		res = append(res, genTableName(v.Name, ""))
 	case *ast.CreateTableStmt:
-		res = genTableName(v.Table.Schema.L, v.Table.Name.L)
-	case *ast.DropIndexStmt:
-		res = genTableName(v.Table.Schema.L, v.Table.Name.L)
-	case *ast.TruncateTableStmt:
-		res = genTableName(v.Table.Schema.L, v.Table.Name.L)
+		res = append(res, genTableName(v.Table.Schema.L, v.Table.Name.L))
+		if v.ReferTable != nil {
+			res = append(res, genTableName(v.ReferTable.Schema.L, v.ReferTable.Name.L))
+		}
 	case *ast.DropTableStmt:
 		if len(v.Tables) != 1 {
 			return res, errors.Errorf("drop table with multiple tables, may resovle ddl sql failed")
 		}
-		res = genTableName(v.Tables[0].Schema.L, v.Tables[0].Name.L)
+		res = append(res, genTableName(v.Tables[0].Schema.L, v.Tables[0].Name.L))
+	case *ast.TruncateTableStmt:
+		res = append(res, genTableName(v.Table.Schema.L, v.Table.Name.L))
+	case *ast.AlterTableStmt:
+		res = append(res, genTableName(v.Table.Schema.L, v.Table.Name.L))
+		if v.Specs[0].NewTable != nil {
+			res = append(res, genTableName(v.Specs[0].NewTable.Schema.L, v.Specs[0].NewTable.Name.L))
+		}
+	case *ast.RenameTableStmt:
+		res = append(res, genTableName(v.OldTable.Schema.L, v.OldTable.Name.L))
+		res = append(res, genTableName(v.NewTable.Schema.L, v.NewTable.Name.L))
+	case *ast.CreateIndexStmt:
+		res = append(res, genTableName(v.Table.Schema.L, v.Table.Name.L))
+	case *ast.DropIndexStmt:
+		res = append(res, genTableName(v.Table.Schema.L, v.Table.Name.L))
 	default:
-		return res, errors.Errorf("unkown ddl type")
+		return res, errors.Errorf("unkown type ddl %s", sql)
 	}
 
 	return res, nil
@@ -679,6 +754,21 @@ LOOP:
 	}
 
 	return errors.Errorf("exec sqls[%v] failed", sqls)
+}
+
+func findLastWord(literal string) int {
+	index := len(literal) - 1
+	for index >= 0 && literal[index-1] == ' ' {
+		index--
+	}
+
+	for index >= 0 {
+		if literal[index-1] == ' ' {
+			return index
+		}
+		index--
+	}
+	return index
 }
 
 func createDB(cfg DBConfig, timeout string) (*sql.DB, error) {

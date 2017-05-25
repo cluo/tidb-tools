@@ -1,16 +1,46 @@
+// Copyright 2017 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
 	"regexp"
 	"strings"
-
-	"github.com/ngaut/log"
 )
 
+/*
+CREATE [TEMPORARY] TABLE [IF NOT EXISTS] tbl_name
+    { LIKE old_tbl_name | (LIKE old_tbl_name) }
+*/
 var (
 	defaultIgnoreDB = "mysql"
-	triggerRegex    = regexp.MustCompile(`(^CREATE (DEFINER=\S+ )*TRIGGER)`)
-	skipSQLs        = []string{
+	// https://dev.mysql.com/doc/refman/5.7/en/create-database.html
+	createDatabaseRegex = regexp.MustCompile("(?i)CREATE\\s+(DATABASE|SCHEMA)\\s+(IF NOT EXISTS\\s+)?\\S+")
+	// https://dev.mysql.com/doc/refman/5.7/en/drop-database.html
+	dropDatabaseRegex = regexp.MustCompile("(?i)DROP\\s+(DATABASE|SCHEMA)\\s+(IF EXISTS\\s+)?\\S+")
+	// https://dev.mysql.com/doc/refman/5.7/en/create-index.html
+	// https://dev.mysql.com/doc/refman/5.7/en/drop-index.html
+	indexDDLRegex = regexp.MustCompile("(?i)ON\\s+\\S*")
+	// https://dev.mysql.com/doc/refman/5.7/en/create-table.html
+	createTableRegex     = regexp.MustCompile("(?i)^CREATE\\s+(TEMPORARY\\s+)?TABLE\\s+(IF NOT EXISTS\\s+)?\\S+")
+	createTableLikeRegex = regexp.MustCompile("(?i)^CREATE\\s+(TEMPORARY\\s+)?TABLE\\s+(IF NOT EXISTS\\s+)?\\S+\\s*\\(?\\s*LIKE\\s+\\S+")
+	// https://dev.mysql.com/doc/refman/5.7/en/drop-table.html
+	dropTableRegex = regexp.MustCompile("^(?i)DROP\\s+(TEMPORARY\\s+)?TABLE\\s+(IF EXISTS\\s+)?\\S+")
+	// https://dev.mysql.com/doc/refman/5.7/en/alter-table.html
+	alterTableRegex = regexp.MustCompile("^(?i)ALTER\\s+TABLE\\s+\\S+")
+	// https://dev.mysql.com/doc/refman/5.7/en/create-trigger.html
+	triggerRegex = regexp.MustCompile(`(^(?i)CREATE (DEFINER=\S+ )*TRIGGER)`)
+	skipSQLs     = []string{
 		// For mariadb, for query event, like `# Dumm`
 		// But i don't know what is the meaning of this event.
 		"^#",
@@ -62,8 +92,8 @@ func init() {
 }
 
 // whiteFilter whitelist filtering
-func (s *Syncer) whiteFilter(stbs []TableName) []TableName {
-	var tbs []TableName
+func (s *Syncer) whiteFilter(stbs []*TableName) []*TableName {
+	var tbs []*TableName
 	if len(s.cfg.DoTables) == 0 && len(s.cfg.DoDBs) == 0 {
 		return stbs
 	}
@@ -79,8 +109,8 @@ func (s *Syncer) whiteFilter(stbs []TableName) []TableName {
 }
 
 // blackFilter blacklist filtering
-func (s *Syncer) blackFilter(stbs []TableName) []TableName {
-	var tbs []TableName
+func (s *Syncer) blackFilter(stbs []*TableName) []*TableName {
+	var tbs []*TableName
 	for _, tb := range stbs {
 		if s.matchTable(s.cfg.IgnoreTables, tb) {
 			continue
@@ -93,7 +123,7 @@ func (s *Syncer) blackFilter(stbs []TableName) []TableName {
 	return tbs
 }
 
-func (s *Syncer) skipQueryEvent(sql string, schema string) bool {
+func (s *Syncer) skipQueryEvent(sql string) bool {
 	if skipPatterns.FindStringIndex(sql) != nil {
 		return true
 	}
@@ -107,9 +137,6 @@ func (s *Syncer) skipQueryEvent(sql string, schema string) bool {
 	if triggerRegex.FindStringIndex(sql) != nil {
 		return true
 	}
-	if schema == defaultIgnoreDB {
-		return true
-	}
 
 	return false
 }
@@ -119,7 +146,7 @@ func (s *Syncer) skipRowEvent(schema string, table string) bool {
 	if schema == defaultIgnoreDB {
 		return true
 	}
-	tbs := []TableName{
+	tbs := []*TableName{
 		{
 			Schema: strings.ToLower(schema),
 			Name:   strings.ToLower(table),
@@ -134,25 +161,16 @@ func (s *Syncer) skipRowEvent(schema string, table string) bool {
 }
 
 // skipQueryDDL first whitelist filtering and then blacklist filtering
-func (s *Syncer) skipQueryDDL(sql string, schema string) bool {
-	tb, err := parserDDLTableName(sql)
-	if err != nil {
-		log.Warnf("[get table failure]:%s %s", sql, err)
-	}
-	if tb.Schema == "" {
-		tb.Schema = schema
-	}
-	if tb.Schema == defaultIgnoreDB {
-		return true
-	}
-	if err == nil {
-		tbs := []TableName{tb}
-		tbs = s.whiteFilter(tbs)
-		tbs = s.blackFilter(tbs)
-		if len(tbs) == 0 {
+func (s *Syncer) skipQueryDDL(sql string, tbs []*TableName) bool {
+	for i := range tbs {
+		if tbs[i].Schema == defaultIgnoreDB {
 			return true
 		}
-		return false
+	}
+	tbs = s.whiteFilter(tbs)
+	tbs = s.blackFilter(tbs)
+	if len(tbs) == 0 {
+		return true
 	}
 	return false
 }
@@ -173,7 +191,7 @@ func (s *Syncer) matchDB(patternDBS []string, a string) bool {
 	return false
 }
 
-func (s *Syncer) matchTable(patternTBS []TableName, tb TableName) bool {
+func (s *Syncer) matchTable(patternTBS []*TableName, tb *TableName) bool {
 	for _, ptb := range patternTBS {
 		if s.matchString(ptb.Name, tb.Name) && s.matchString(ptb.Schema, tb.Schema) {
 			return true
