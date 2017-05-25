@@ -789,7 +789,7 @@ func (s *Syncer) run() (err error) {
 			}
 			log.Debugf("gtid information: binlog %v, gtid %s", pos, gtid)
 
-			binlogGTID.WithLabelValues("syncer", u.String()).Set(float64(ev.GNO))
+			binlogGTID.WithLabelValues("syncer").Set(float64(ev.GNO))
 		}
 	}
 }

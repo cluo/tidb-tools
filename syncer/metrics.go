@@ -73,7 +73,7 @@ var (
 			Namespace: "syncer",
 			Name:      "gtid",
 			Help:      "current transaction id",
-		}, []string{"node", "server_uuid"})
+		}, []string{"node"})
 )
 
 func initStatusAndMetrics(addr string) {
@@ -118,11 +118,11 @@ func getBinlogIndex(filename string) float64 {
 }
 
 func masterGTIDGauge(gtidSet GTIDSet) {
-	for uuid, uuidSet := range gtidSet.all() {
+	for _, uuidSet := range gtidSet.all() {
 		length := uuidSet.Intervals.Len()
 		maxInterval := uuidSet.Intervals[length-1]
 		// Why stop - 1? See github.com/siddontang/go-mysql parseInterval for more details.
 		stop := maxInterval.Stop - 1
-		binlogGTID.WithLabelValues("master", uuid).Set(float64(stop))
+		binlogGTID.WithLabelValues("master").Set(float64(stop))
 	}
 }
