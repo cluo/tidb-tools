@@ -36,7 +36,7 @@ var (
 	retryTimeout = 3 * time.Second
 	waitTime     = 10 * time.Millisecond
 	maxWaitTime  = 3 * time.Second
-	eventTimeout = 3 * time.Second
+	eventTimeout = 1 * time.Hour
 	statusTime   = 30 * time.Second
 
 	maxDMLConnectionTimeout = "3s"
@@ -608,6 +608,11 @@ func (s *Syncer) run() (err error) {
 			log.Infof("ready to quit! [%v]", pos)
 			return nil
 		} else if err == context.DeadlineExceeded {
+			log.Info("deadline exceeded.")
+			if s.needResync() {
+				log.Info("timeout, resync")
+				streamer, isGTIDMode, err = s.reopen(&cfg)
+			}
 			continue
 		}
 
@@ -982,6 +987,11 @@ func (s *Syncer) reSyncBinlog(cfg *replication.BinlogSyncerConfig) (*replication
 		return nil, false, err
 	}
 	// close still running sync
+
+	return s.reopen(cfg)
+}
+
+func (s *Syncer) reopen(cfg *replication.BinlogSyncerConfig) (*replication.BinlogStreamer, bool, error) {
 	s.syncer.Close()
 	s.syncer = replication.NewBinlogSyncer(cfg)
 	return s.getBinlogStreamer()
@@ -1022,4 +1032,37 @@ func (s *Syncer) Close() {
 	}
 
 	s.closed.Set(true)
+}
+
+func (s *Syncer) needResync() bool {
+	if s.lackOfReplClientPrivilege {
+		return false
+	}
+	masterPos, _, err := s.getMasterStatus()
+	if err != nil {
+		log.Errorf("get master status err:%s", err)
+		return false
+	}
+
+	return !s.isUpToDate(masterPos, s.meta.Pos())
+}
+
+func (s *Syncer) isUpToDate(mpos, spos mysql.Position) bool {
+	if mpos.Name > spos.Name {
+		return false
+	} else if mpos.Name < spos.Name {
+		return true
+	} else {
+		// Why 190 ?
+		// +------------------+-----+----------------+-----------+-------------+-------------------------------------------------------------------+
+		// | Log_name         | Pos | Event_type     | Server_id | End_log_pos | Info                                                              |
+		// +------------------+-----+----------------+-----------+-------------+-------------------------------------------------------------------+
+		// | mysql-bin.000002 |   4 | Format_desc    |         1 |         123 | Server ver: 5.7.18-log, Binlog ver: 4                             |
+		// | mysql-bin.000002 | 123 | Previous_gtids |         1 |         194 | 00020393-1111-1111-1111-111111111111:1-7
+		//
+		// Currently, syncer doesn't handle Format_desc and Previous_gtids events. When binlog rotate to new file with only two events like above,
+		// syncer won't save pos to 194. Actually it save pos 4 to meta file. So We got a experience value of 194 - 4 = 190.
+		// If (mpos.Pos - spos.Pos) > 190, we could say that syncer is not up-to-date.
+		return (mpos.Pos - spos.Pos) <= 190
+	}
 }
