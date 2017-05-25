@@ -566,6 +566,11 @@ func (s *Syncer) run() (err error) {
 		return errors.Trace(err)
 	}
 
+	err = s.initializeServerUUID()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
 	// support regex
 	s.genRegexMap()
 
@@ -777,17 +782,31 @@ func (s *Syncer) run() (err error) {
 			if err != nil {
 				return errors.Trace(err)
 			}
-			// while meet GTIDEvent, save previous gtid to prevent losing binlog from syncer panicing
 			gtid := fmt.Sprintf("%s:1-%d", u.String(), ev.GNO)
 			uuidSet, err = mysql.ParseUUIDSet(gtid)
 			if err != nil {
 				return errors.Trace(err)
 			}
-			log.Debugf("gtid infomation: binlog %v, gtid %s", pos, gtid)
+			log.Debugf("gtid information: binlog %v, gtid %s", pos, gtid)
 
 			binlogGTID.WithLabelValues("syncer", u.String()).Set(float64(ev.GNO))
 		}
 	}
+}
+
+func (s *Syncer) initializeServerUUID() error {
+	uuid, err := s.getServerUUID()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	localMeta, ok := s.meta.(*LocalMeta)
+	if !ok {
+		log.Warn("meta is not type of LocalMeta")
+		return nil
+	}
+	localMeta.SetServerUUID(uuid)
+	return nil
 }
 
 func (s *Syncer) commitJob(tp opType, sql string, args []interface{}, keys []string, retry bool, pos mysql.Position, gs GTIDSet) error {
@@ -870,9 +889,10 @@ func (s *Syncer) printStatus() {
 	defer timer.Stop()
 
 	var (
-		err           error
-		masterPos     mysql.Position
-		masterGTIDSet GTIDSet
+		err                 error
+		latestMasterPos     mysql.Position
+		latestMasterGTID    GTIDSet
+		latestmasterGTIDSet GTIDSet
 	)
 
 	for {
@@ -893,21 +913,22 @@ func (s *Syncer) printStatus() {
 			}
 
 			if !s.lackOfReplClientPrivilege {
-				masterPos, masterGTIDSet, err = s.getMasterStatus()
+				latestMasterPos, latestmasterGTIDSet, err = s.getMasterStatus()
 				if err != nil {
 					if isAccessDeniedError(err) {
 						s.lackOfReplClientPrivilege = true
 					}
 					log.Errorf("[syncer] get master status error %s", err)
 				} else {
-					binlogPos.WithLabelValues("master").Set(float64(masterPos.Pos))
-					binlogFile.WithLabelValues("master").Set(getBinlogIndex(masterPos.Name))
-					masterGTIDGauge(masterGTIDSet)
+					binlogPos.WithLabelValues("master").Set(float64(latestMasterPos.Pos))
+					binlogFile.WithLabelValues("master").Set(getBinlogIndex(latestMasterPos.Name))
+					latestMasterGTID = getLatestGTID(latestmasterGTIDSet, s.meta.GetServerUUID())
+					masterGTIDGauge(latestMasterGTID)
 				}
 			}
 
 			log.Infof("[syncer]total events = %d, total tps = %d, recent tps = %d, master-binlog = %v, master-binlog-gtid=%v, %s,",
-				total, totalTps, tps, masterPos, masterGTIDSet, s.meta)
+				total, totalTps, tps, latestMasterPos, latestMasterGTID, s.meta)
 
 			s.lastCount.Set(total)
 			s.lastTime = time.Now()
@@ -976,7 +997,6 @@ func (s *Syncer) reSyncBinlog(cfg *replication.BinlogSyncerConfig) (*replication
 		return nil, false, err
 	}
 	// close still running sync
-
 	return s.reopen(cfg)
 }
 

@@ -51,28 +51,37 @@ type Meta interface {
 
 	// GTID() returns gtid information.
 	GTID() (GTIDSet, error)
+
+	// ServerUUID returns mysql server_uuid
+	GetServerUUID() string
+
+	// SetServerUUID sets mysql server_uuid
+	SetServerUUID(uuid string)
 }
 
 // LocalMeta is local meta struct.
 type LocalMeta struct {
 	sync.RWMutex
 
-	name     string
+	filename string
 	saveTime time.Time
 
 	BinLogName string `toml:"binlog-name" json:"binlog-name"`
 	BinLogPos  uint32 `toml:"binlog-pos" json:"binlog-pos"`
 	BinlogGTID string `toml:"binlog-gtid" json:"binlog-gtid"`
+
+	// mysql server uuid
+	serverUUID string
 }
 
 // NewLocalMeta creates a new LocalMeta.
-func NewLocalMeta(name string) *LocalMeta {
-	return &LocalMeta{name: name, BinLogPos: 4}
+func NewLocalMeta(filename string) *LocalMeta {
+	return &LocalMeta{filename: filename, BinLogPos: 4}
 }
 
 // Load implements Meta.Load interface.
 func (lm *LocalMeta) Load() error {
-	file, err := os.Open(lm.name)
+	file, err := os.Open(lm.filename)
 	if err != nil && !os.IsNotExist(errors.Cause(err)) {
 		return errors.Trace(err)
 	}
@@ -92,7 +101,7 @@ func (lm *LocalMeta) Save(pos mysql.Position, gs GTIDSet, force bool) error {
 
 	lm.BinLogName = pos.Name
 	lm.BinLogPos = pos.Pos
-	lm.BinlogGTID = gs.String()
+	lm.BinlogGTID = getLatestGTID(gs, lm.serverUUID).String()
 
 	if force {
 		return lm.Flush()
@@ -106,13 +115,13 @@ func (lm *LocalMeta) Flush() error {
 	e := toml.NewEncoder(&buf)
 	err := e.Encode(lm)
 	if err != nil {
-		log.Errorf("save meta info to file %s failed: %v", lm.name, errors.ErrorStack(err))
+		log.Errorf("save meta info to file %s failed: %v", lm.filename, errors.ErrorStack(err))
 		return errors.Trace(err)
 	}
 
-	err = ioutil2.WriteFileAtomic(lm.name, buf.Bytes(), 0644)
+	err = ioutil2.WriteFileAtomic(lm.filename, buf.Bytes(), 0644)
 	if err != nil {
-		log.Errorf("save meta info to file %s failed: %v", lm.name, errors.ErrorStack(err))
+		log.Errorf("save meta info to file %s failed: %v", lm.filename, errors.ErrorStack(err))
 		return errors.Trace(err)
 	}
 
@@ -150,8 +159,19 @@ func (lm *LocalMeta) Check() bool {
 	return false
 }
 
+// GetServerUUID implements Meta.ServerUUID interface.
+func (lm *LocalMeta) GetServerUUID() string {
+	return lm.serverUUID
+}
+
+// SetServerUUID sets server_uuid.
+func (lm *LocalMeta) SetServerUUID(uuid string) {
+	lm.serverUUID = uuid
+}
+
 func (lm *LocalMeta) String() string {
 	pos := lm.Pos()
 	gs, _ := lm.GTID()
+	gs = getLatestGTID(gs, lm.serverUUID)
 	return fmt.Sprintf("binlog-name = %s, binlog-pos = %d, binlog-gtid = %v", pos.Name, pos.Pos, gs)
 }

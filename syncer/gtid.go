@@ -45,3 +45,17 @@ func (g GTIDSet) contain(uuid string) bool {
 func (g GTIDSet) all() map[string]*mysql.UUIDSet {
 	return g.Sets
 }
+
+func getLatestGTID(gtidSet GTIDSet, uuid string) GTIDSet {
+	uuidSet, ok := gtidSet.Sets[uuid]
+	if !ok {
+		// return original gtidSet
+		return gtidSet
+	}
+
+	s := new(mysql.MysqlGTIDSet)
+	s.Sets = make(map[string]*mysql.UUIDSet)
+	s.AddSet(uuidSet)
+
+	return GTIDSet{s}
+}

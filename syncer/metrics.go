@@ -120,7 +120,9 @@ func getBinlogIndex(filename string) float64 {
 func masterGTIDGauge(gtidSet GTIDSet) {
 	for uuid, uuidSet := range gtidSet.all() {
 		length := uuidSet.Intervals.Len()
-		stop := uuidSet.Intervals[length-1].Stop
+		maxInterval := uuidSet.Intervals[length-1]
+		// Why stop - 1? See github.com/siddontang/go-mysql parseInterval for more details.
+		stop := maxInterval.Stop - 1
 		binlogGTID.WithLabelValues("master", uuid).Set(float64(stop))
 	}
 }
