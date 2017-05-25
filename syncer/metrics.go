@@ -23,7 +23,6 @@ import (
 	"github.com/ngaut/log"
 	"github.com/pingcap/tidb-tools/pkg/utils"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/siddontang/go-mysql/mysql"
 )
 
 var (
@@ -118,18 +117,10 @@ func getBinlogIndex(filename string) float64 {
 	return idx
 }
 
-func masterGTIDGauge(gtids map[string]string) {
-	for uuid, gtid := range gtids {
-		set, err := mysql.ParseUUIDSet(gtid)
-		if err != nil {
-			log.Warnf("[syncer] parse uuid set error:%s, gtid:%s", err, gtid)
-			continue
-		}
-		if len(set.Intervals) == 0 {
-			continue
-		}
-		// intervals are sorted asc.
-		maxStop := set.Intervals[len(set.Intervals)-1].Stop
-		binlogGTID.WithLabelValues("master", uuid).Set(float64(maxStop))
+func masterGTIDGauge(gtidSet GTIDSet) {
+	for uuid, uuidSet := range gtidSet.all() {
+		length := uuidSet.Intervals.Len()
+		stop := uuidSet.Intervals[length-1].Stop
+		binlogGTID.WithLabelValues("master", uuid).Set(float64(stop))
 	}
 }

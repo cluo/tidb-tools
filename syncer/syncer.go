@@ -179,9 +179,12 @@ func (s *Syncer) checkBinlogFormat() error {
 func (s *Syncer) retrySyncGTIDs() error {
 	log.Info("start retry sync gtid")
 
-	gtids := s.meta.GTID()
-	log.Infof("old gtids %v", gtids)
-	_, newGTIDs, err := s.getMasterStatus()
+	gs, err := s.meta.GTID()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	log.Infof("old gtid set %v", gs)
+	_, newGS, err := s.getMasterStatus()
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -190,28 +193,23 @@ func (s *Syncer) retrySyncGTIDs() error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	log.Infof("new master gtids %v, master uuid %s", newGTIDs, masterUUID)
+	log.Infof("new master gtid set %v, master uuid %s", newGS, masterUUID)
 	// remove master gtid from currentGTIDs
-	delete(newGTIDs, masterUUID)
+	newGS.delete(masterUUID)
 	// remove useless gtid from
-	for uuid := range gtids {
-		if _, ok := newGTIDs[uuid]; !ok {
-			delete(gtids, uuid)
+	for uuid := range gs.all() {
+		if ok := newGS.contain(uuid); !ok {
+			gs.delete(uuid)
 		}
 	}
 	// add unknow gtid
-	for uuid, gtid := range newGTIDs {
-		if _, ok := gtids[uuid]; !ok {
-			gtids[uuid] = gtid
+	for uuid, uuidSet := range newGS.all() {
+		if ok := gs.contain(uuid); !ok {
+			gs.AddSet(uuidSet)
 		}
 	}
-	// save savepoint
-	pos := s.meta.Pos()
-	for uuid, gtid := range gtids {
-		s.meta.Save(pos, uuid, gtid, false)
-	}
 	// force to save in meta file
-	s.meta.Save(pos, "", "", true)
+	s.meta.Save(s.meta.Pos(), gs, true)
 
 	return nil
 }
@@ -220,7 +218,7 @@ func (s *Syncer) getServerUUID() (string, error) {
 	return getServerUUID(s.fromDB)
 }
 
-func (s *Syncer) getMasterStatus() (mysql.Position, map[string]string, error) {
+func (s *Syncer) getMasterStatus() (mysql.Position, GTIDSet, error) {
 	return getMasterStatus(s.fromDB)
 }
 
@@ -400,8 +398,8 @@ func (s *Syncer) addCount(tp opType, n int64) {
 		sqlJobsTotal.WithLabelValues("del").Add(float64(n))
 	case ddl:
 		sqlJobsTotal.WithLabelValues("ddl").Add(float64(n))
-	case xid, gtid:
-		// skip xid, gtid jobs
+	case xid:
+		// skip xid jobs
 	default:
 		panic("unreachable")
 	}
@@ -424,21 +422,18 @@ func (s *Syncer) checkWait(job *job) bool {
 func (s *Syncer) addJob(job *job) error {
 	switch job.tp {
 	case xid:
-		return s.meta.Save(job.pos, "", "", false)
-	case gtid:
-		return s.meta.Save(job.pos, job.gtid.id, job.gtid.gtid, false)
+		return s.meta.Save(job.pos, job.gtidSet, false)
 	case ddl:
 		// while meet ddl, we should wait all dmls finished firstly
 		s.jobWg.Wait()
 	case flush:
 		s.jobWg.Wait()
-		err := s.meta.Save(job.pos, "", "", true)
+		err := s.meta.Flush()
 		return errors.Trace(err)
 	}
 
 	if len(job.sql) > 0 {
 		s.jobWg.Add(1)
-		log.Debugf("add job [sql]%s; [position]%v", job.sql, job.pos)
 		if job.tp == ddl {
 			s.jobs[s.cfg.WorkerCount] <- job
 		} else {
@@ -453,7 +448,7 @@ func (s *Syncer) addJob(job *job) error {
 		s.c.reset()
 	}
 
-	err := s.meta.Save(job.pos, "", "", wait)
+	err := s.meta.Save(job.pos, job.gtidSet, wait)
 	return errors.Trace(err)
 }
 
@@ -592,13 +587,14 @@ func (s *Syncer) run() (err error) {
 	go s.printStatus()
 
 	pos := s.meta.Pos()
-	// while meet GTIDEvent, save previous gtid to prevent losing binlog from syncer panicing
+	gs, err := s.meta.GTID()
+	if err != nil {
+		return errors.Trace(err)
+	}
 	var (
-		id         string
-		gtid       string
-		needReSync = true
+		uuidSet   *mysql.UUIDSet
+		tryReSync = true
 	)
-	var alreadyIgnoreAllRotateEvent bool
 	for {
 		ctx, cancel := context.WithTimeout(s.ctx, eventTimeout)
 		e, err := streamer.GetEvent(ctx)
@@ -618,29 +614,21 @@ func (s *Syncer) run() (err error) {
 
 		if err != nil {
 			log.Errorf("get binlog error %v", err)
-			// retry fix syncing in gtid mode
-			if needReSync && isGTIDMode && isBinlogPurgedError(err) && s.cfg.AutoFixGTID {
+			// try to re-sync in gtid mode
+			if tryReSync && isGTIDMode && isBinlogPurgedError(err) && s.cfg.AutoFixGTID {
 				time.Sleep(retryTimeout)
 				streamer, isGTIDMode, err = s.reSyncBinlog(&cfg)
 				if err != nil {
 					return errors.Trace(err)
 				}
-				needReSync = false
+				tryReSync = false
 				continue
 			}
 
 			return errors.Trace(err)
 		}
-		// get binlog event, reset needReSync, so we can re-sync binlog while syncer meets errors next time
-		needReSync = true
-		// if gtid mode, should ignore the rotate events at head of event stream
-		if !alreadyIgnoreAllRotateEvent && isGTIDMode {
-			alreadyIgnoreAllRotateEvent = isNotRotateEvent(e)
-			if !alreadyIgnoreAllRotateEvent {
-				continue
-			}
-		}
-
+		// get binlog event, reset tryReSync, so we can re-sync binlog while syncer meets errors next time
+		tryReSync = true
 		binlogPos.WithLabelValues("syncer").Set(float64(e.Header.LogPos))
 		binlogFile.WithLabelValues("syncer").Set(getBinlogIndex(s.meta.Pos().Name))
 
@@ -648,14 +636,19 @@ func (s *Syncer) run() (err error) {
 		case *replication.RotateEvent:
 			binlogEventsTotal.WithLabelValues("rotate").Inc()
 
-			pos.Name = string(ev.NextLogName)
-			pos.Pos = uint32(ev.Position)
+			currentPos := mysql.Position{
+				Name: string(ev.NextLogName),
+				Pos:  uint32(ev.Position),
+			}
+			if compareBinlogPos(currentPos, pos, 0) <= 0 {
+				continue
+			}
 
-			err = s.meta.Save(pos, "", "", true)
+			pos = currentPos
+			err = s.meta.Save(pos, gs, true)
 			if err != nil {
 				return errors.Trace(err)
 			}
-
 			log.Infof("rotate binlog to %v", pos)
 		case *replication.RowsEvent:
 			// binlogEventsTotal.WithLabelValues("type", "rows").Add(1)
@@ -663,7 +656,7 @@ func (s *Syncer) run() (err error) {
 			table := &table{}
 			if s.skipRowEvent(string(ev.Table.Schema), string(ev.Table.Table)) {
 				binlogSkippedEventsTotal.WithLabelValues("rows").Inc()
-				if err = s.recordSkipSQLsPos(insert, pos); err != nil {
+				if err = s.recordSkipSQLsPos(insert, pos, gs); err != nil {
 					return errors.Trace(err)
 				}
 
@@ -691,7 +684,7 @@ func (s *Syncer) run() (err error) {
 				}
 
 				for i := range sqls {
-					err = s.commitJob(insert, sqls[i], args[i], keys[i], true, pos)
+					err = s.commitJob(insert, sqls[i], args[i], keys[i], true, pos, gs)
 					if err != nil {
 						return errors.Trace(err)
 					}
@@ -705,7 +698,7 @@ func (s *Syncer) run() (err error) {
 				}
 
 				for i := range sqls {
-					err = s.commitJob(update, sqls[i], args[i], keys[i], true, pos)
+					err = s.commitJob(update, sqls[i], args[i], keys[i], true, pos, gs)
 					if err != nil {
 						return errors.Trace(err)
 					}
@@ -719,7 +712,7 @@ func (s *Syncer) run() (err error) {
 				}
 
 				for i := range sqls {
-					err = s.commitJob(del, sqls[i], args[i], keys[i], true, pos)
+					err = s.commitJob(del, sqls[i], args[i], keys[i], true, pos, gs)
 					if err != nil {
 						return errors.Trace(err)
 					}
@@ -732,26 +725,27 @@ func (s *Syncer) run() (err error) {
 
 			lastPos := pos
 			pos.Pos = e.Header.LogPos
-			log.Debugf("[query]%s, [next pos]%v", sql, pos)
+			gs.AddSet(uuidSet)
+			log.Infof("[query]%s [pos]%v [next pos]%v [gtid]%v", sql, lastPos, pos, gs)
 
 			sqls, err := resolveDDLSQL(sql)
 			if err != nil {
 				if s.skipQueryEvent(sql, string(ev.Schema)) {
 					binlogSkippedEventsTotal.WithLabelValues("query").Inc()
-					log.Warnf("[skip query-sql]%s  [schema]:%s", sql, string(ev.Schema))
+					log.Warnf("[skip query-sql]%s [schema]%s", sql, string(ev.Schema))
 					continue
 				}
-				return errors.Errorf("parse query event failed: %v, position %v", err, pos)
+				return errors.Errorf("parse query event failed: %v", err)
 			}
 
 			for _, sql := range sqls {
 				if s.skipQueryDDL(sql, string(ev.Schema)) {
 					binlogSkippedEventsTotal.WithLabelValues("query_ddl").Inc()
-					if err = s.recordSkipSQLsPos(ddl, pos); err != nil {
+					if err = s.recordSkipSQLsPos(ddl, pos, gs); err != nil {
 						return errors.Trace(err)
 					}
 
-					log.Warnf("[skip query-ddl-sql]%s  [schema]:%s", sql, ev.Schema)
+					log.Warnf("[skip query-ddl-sql]%s [schema]%s", sql, ev.Schema)
 					continue
 				}
 
@@ -760,21 +754,22 @@ func (s *Syncer) run() (err error) {
 					return errors.Trace(err)
 				}
 
-				log.Infof("[ddl][start]%s[pos]%v[next pos]%v[schema]%s", sql, lastPos, pos, string(ev.Schema))
+				log.Infof("[ddl][schema]%s [start]%s", string(ev.Schema), sql)
 
-				job := newJob(ddl, sql, nil, "", false, pos)
+				job := newJob(ddl, sql, nil, "", false, pos, gs)
 				err = s.addJob(job)
 				if err != nil {
 					return errors.Trace(err)
 				}
 
-				log.Infof("[ddl][end]%s[pos]%v[next pos]%v", sql, lastPos, pos)
+				log.Infof("[ddl][end]%s", sql)
 
 				s.clearTables()
 			}
 		case *replication.XIDEvent:
 			pos.Pos = e.Header.LogPos
-			job := newXIDJob(pos)
+			gs.AddSet(uuidSet)
+			job := newXIDJob(pos, gs)
 			s.addJob(job)
 		case *replication.GTIDEvent:
 			pos.Pos = e.Header.LogPos
@@ -783,10 +778,11 @@ func (s *Syncer) run() (err error) {
 				return errors.Trace(err)
 			}
 			// while meet GTIDEvent, save previous gtid to prevent losing binlog from syncer panicing
-			job := newGTIDJob(id, gtid, pos)
-			s.addJob(job)
-			id = u.String()
-			gtid = fmt.Sprintf("%s:1-%d", u.String(), ev.GNO)
+			gtid := fmt.Sprintf("%s:1-%d", u.String(), ev.GNO)
+			uuidSet, err = mysql.ParseUUIDSet(gtid)
+			if err != nil {
+				return errors.Trace(err)
+			}
 			log.Debugf("gtid infomation: binlog %v, gtid %s", pos, gtid)
 
 			binlogGTID.WithLabelValues("syncer", u.String()).Set(float64(ev.GNO))
@@ -794,12 +790,12 @@ func (s *Syncer) run() (err error) {
 	}
 }
 
-func (s *Syncer) commitJob(tp opType, sql string, args []interface{}, keys []string, retry bool, pos mysql.Position) error {
+func (s *Syncer) commitJob(tp opType, sql string, args []interface{}, keys []string, retry bool, pos mysql.Position, gs GTIDSet) error {
 	key, err := s.resolveCasuality(keys)
 	if err != nil {
 		return errors.Errorf("resolve karam error %v", err)
 	}
-	job := newJob(tp, sql, args, key, retry, pos)
+	job := newJob(tp, sql, args, key, retry, pos, gs)
 	err = s.addJob(job)
 	return errors.Trace(err)
 }
@@ -874,9 +870,9 @@ func (s *Syncer) printStatus() {
 	defer timer.Stop()
 
 	var (
-		err         error
-		masterPos   mysql.Position
-		masterGTIDs map[string]string
+		err           error
+		masterPos     mysql.Position
+		masterGTIDSet GTIDSet
 	)
 
 	for {
@@ -897,7 +893,7 @@ func (s *Syncer) printStatus() {
 			}
 
 			if !s.lackOfReplClientPrivilege {
-				masterPos, masterGTIDs, err = s.getMasterStatus()
+				masterPos, masterGTIDSet, err = s.getMasterStatus()
 				if err != nil {
 					if isAccessDeniedError(err) {
 						s.lackOfReplClientPrivilege = true
@@ -906,12 +902,12 @@ func (s *Syncer) printStatus() {
 				} else {
 					binlogPos.WithLabelValues("master").Set(float64(masterPos.Pos))
 					binlogFile.WithLabelValues("master").Set(getBinlogIndex(masterPos.Name))
-					masterGTIDGauge(masterGTIDs)
+					masterGTIDGauge(masterGTIDSet)
 				}
 			}
 
-			log.Infof("[syncer]total events = %d, total tps = %d, recent tps = %d, master-binlog-name = %s, master-binlog-pos = %d, master-binlog-gtid=%v, %s,",
-				total, totalTps, tps, masterPos.Name, masterPos.Pos, masterGTIDs, s.meta)
+			log.Infof("[syncer]total events = %d, total tps = %d, recent tps = %d, master-binlog = %v, master-binlog-gtid=%v, %s,",
+				total, totalTps, tps, masterPos, masterGTIDSet, s.meta)
 
 			s.lastCount.Set(total)
 			s.lastTime = time.Now()
@@ -920,20 +916,13 @@ func (s *Syncer) printStatus() {
 }
 
 func (s *Syncer) getBinlogStreamer() (*replication.BinlogStreamer, bool, error) {
-	gtidMap := s.meta.GTID()
-	if s.cfg.EnableGTID && len(gtidMap) != 0 {
-		var gtids []string
-		for _, val := range gtidMap {
-			gtids = append(gtids, val)
-		}
-
-		gtidSet, err := mysql.ParseMysqlGTIDSet(strings.Join(gtids, ","))
+	if s.cfg.EnableGTID {
+		gs, err := s.meta.GTID()
 		if err != nil {
-			log.Errorf("parse gtid %v error %v", gtids, err)
-			return s.startSyncByPosition()
+			return nil, false, errors.Trace(err)
 		}
 
-		streamer, err := s.syncer.StartSyncGTID(gtidSet)
+		streamer, err := s.syncer.StartSyncGTID(gs)
 		if err != nil {
 			log.Errorf("start sync in gtid mode error %v", err)
 			return s.startSyncByPosition()
@@ -968,15 +957,15 @@ func (s *Syncer) createDBs() error {
 
 // record skip ddl/dml sqls' position
 // make newJob's sql argument empty to distinguish normal sql and skips sql
-func (s *Syncer) recordSkipSQLsPos(op opType, pos mysql.Position) error {
-	job := newJob(op, "", nil, "", false, pos)
+func (s *Syncer) recordSkipSQLsPos(op opType, pos mysql.Position, gtidSet GTIDSet) error {
+	job := newJob(op, "", nil, "", false, pos, gtidSet)
 	err := s.addJob(job)
 	return errors.Trace(err)
 }
 
 func (s *Syncer) flushJobs() error {
 	log.Infof("flush all jobs meta = %v", s.meta)
-	job := newJob(flush, "", nil, "", false, s.meta.Pos())
+	job := newFlushJob()
 	err := s.addJob(job)
 	return errors.Trace(err)
 }
@@ -1044,25 +1033,15 @@ func (s *Syncer) needResync() bool {
 		return false
 	}
 
-	return !s.isUpToDate(masterPos, s.meta.Pos())
-}
-
-func (s *Syncer) isUpToDate(mpos, spos mysql.Position) bool {
-	if mpos.Name > spos.Name {
-		return false
-	} else if mpos.Name < spos.Name {
-		return true
-	} else {
-		// Why 190 ?
-		// +------------------+-----+----------------+-----------+-------------+-------------------------------------------------------------------+
-		// | Log_name         | Pos | Event_type     | Server_id | End_log_pos | Info                                                              |
-		// +------------------+-----+----------------+-----------+-------------+-------------------------------------------------------------------+
-		// | mysql-bin.000002 |   4 | Format_desc    |         1 |         123 | Server ver: 5.7.18-log, Binlog ver: 4                             |
-		// | mysql-bin.000002 | 123 | Previous_gtids |         1 |         194 | 00020393-1111-1111-1111-111111111111:1-7
-		//
-		// Currently, syncer doesn't handle Format_desc and Previous_gtids events. When binlog rotate to new file with only two events like above,
-		// syncer won't save pos to 194. Actually it save pos 4 to meta file. So We got a experience value of 194 - 4 = 190.
-		// If (mpos.Pos - spos.Pos) > 190, we could say that syncer is not up-to-date.
-		return (mpos.Pos - spos.Pos) <= 190
-	}
+	// Why 190 ?
+	// +------------------+-----+----------------+-----------+-------------+-------------------------------------------------------------------+
+	// | Log_name         | Pos | Event_type     | Server_id | End_log_pos | Info                                                              |
+	// +------------------+-----+----------------+-----------+-------------+-------------------------------------------------------------------+
+	// | mysql-bin.000002 |   4 | Format_desc    |         1 |         123 | Server ver: 5.7.18-log, Binlog ver: 4                             |
+	// | mysql-bin.000002 | 123 | Previous_gtids |         1 |         194 | 00020393-1111-1111-1111-111111111111:1-7
+	//
+	// Currently, syncer doesn't handle Format_desc and Previous_gtids events. When binlog rotate to new file with only two events like above,
+	// syncer won't save pos to 194. Actually it save pos 4 to meta file. So We got a experience value of 194 - 4 = 190.
+	// If (mpos.Pos - spos.Pos) > 190, we could say that syncer is not up-to-date.
+	return compareBinlogPos(masterPos, s.meta.Pos(), 190) == 1
 }

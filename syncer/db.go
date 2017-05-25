@@ -34,7 +34,6 @@ import (
 	"github.com/pingcap/tidb/parser"
 	"github.com/pingcap/tidb/terror"
 	gmysql "github.com/siddontang/go-mysql/mysql"
-	"github.com/siddontang/go-mysql/replication"
 )
 
 // safeMode makes syncer reentrant.
@@ -45,54 +44,6 @@ import (
 // if we start syncer at an early position, database must bear a period of inconsistent state,
 // it's eventual consistency.
 var safeMode bool
-
-type opType byte
-
-const (
-	insert = iota + 1
-	update
-	del
-	ddl
-	xid
-	gtid
-	flush
-)
-
-type gtidInfo struct {
-	id   string // mysql: server uuid/mariadb Domain ID + server ID
-	gtid string
-}
-
-type job struct {
-	tp    opType
-	sql   string
-	args  []interface{}
-	key   string
-	retry bool
-	pos   gmysql.Position
-	gtid  *gtidInfo
-}
-
-func newJob(tp opType, sql string, args []interface{}, key string, retry bool, pos gmysql.Position) *job {
-	return &job{tp: tp, sql: sql, args: args, key: key, retry: retry, pos: pos}
-}
-
-func newGTIDJob(id string, gtidStr string, pos gmysql.Position) *job {
-	return &job{tp: gtid, gtid: &gtidInfo{id: id, gtid: gtidStr}, pos: pos}
-}
-
-func newXIDJob(pos gmysql.Position) *job {
-	return &job{tp: xid, pos: pos}
-}
-
-func isNotRotateEvent(e *replication.BinlogEvent) bool {
-	switch e.Event.(type) {
-	case *replication.RotateEvent:
-		return false
-	default:
-		return true
-	}
-}
 
 type column struct {
 	idx      int
@@ -462,18 +413,6 @@ func ignoreDDLError(err error) bool {
 	}
 }
 
-func isBinlogPurgedError(err error) bool {
-	mysqlErr, ok := errors.Cause(err).(*gmysql.MyError)
-	if !ok {
-		return false
-	}
-	errCode := terror.ErrCode(mysqlErr.Code)
-	if errCode == gmysql.ER_MASTER_FATAL_ERROR_READING_BINLOG {
-		return true
-	}
-	return false
-}
-
 func isDDLSQL(sql string) (bool, error) {
 	stmt, err := parser.New().ParseOneStmt(sql, "", "")
 	if err != nil {
@@ -608,6 +547,18 @@ func isRetryableError(err error) bool {
 	}
 
 	return true
+}
+
+func isBinlogPurgedError(err error) bool {
+	mysqlErr, ok := errors.Cause(err).(*gmysql.MyError)
+	if !ok {
+		return false
+	}
+	errCode := terror.ErrCode(mysqlErr.Code)
+	if errCode == gmysql.ER_MASTER_FATAL_ERROR_READING_BINLOG {
+		return true
+	}
+	return false
 }
 
 func isAccessDeniedError(err error) bool {
@@ -800,14 +751,21 @@ func getServerUUID(db *sql.DB) (string, error) {
 	return masterUUID, nil
 }
 
-func getMasterStatus(db *sql.DB) (gmysql.Position, map[string]string, error) {
-	var binlogPos gmysql.Position
-	newGTIDs := make(map[string]string)
+func getMasterStatus(db *sql.DB) (gmysql.Position, GTIDSet, error) {
+	var (
+		binlogPos gmysql.Position
+		gs        GTIDSet
+	)
 	rows, err := db.Query(`SHOW MASTER STATUS`)
 	if err != nil {
-		return binlogPos, nil, errors.Trace(err)
+		return binlogPos, gs, errors.Trace(err)
 	}
 	defer rows.Close()
+
+	rowColumns, err := rows.Columns()
+	if err != nil {
+		return binlogPos, gs, errors.Trace(err)
+	}
 
 	// Show an example.
 	/*
@@ -819,38 +777,34 @@ func getMasterStatus(db *sql.DB) (gmysql.Position, map[string]string, error) {
 		+-----------+----------+--------------+------------------+--------------------------------------------+
 	*/
 	var (
-		gtidSet    string
+		gtid       string
 		binlogName string
 		pos        uint32
 		nullPtr    interface{}
 	)
 	for rows.Next() {
-		err = rows.Scan(&binlogName, &pos, &nullPtr, &nullPtr, &gtidSet)
+		if len(rowColumns) == 5 {
+			err = rows.Scan(&binlogName, &pos, &nullPtr, &nullPtr, &gtid)
+		} else {
+			err = rows.Scan(&binlogName, &pos, &nullPtr, &nullPtr)
+		}
 		if err != nil {
-			return binlogPos, nil, errors.Trace(err)
+			return binlogPos, gs, errors.Trace(err)
 		}
 
 		binlogPos = gmysql.Position{
 			Name: binlogName,
 			Pos:  pos,
 		}
-		if gtidSet == "" {
-			break
-		}
 
-		gtids := strings.Split(gtidSet, ",")
-		for _, gtid := range gtids {
-			sep := strings.Split(gtid, ":")
-			if len(sep) < 2 {
-				return binlogPos, nil, errors.Errorf("invalid GTID format:%s, must UUID:interval[:interval]", gtid)
-			}
-			newGTIDs[sep[0]] = gtid
+		gs, err = parseGTIDSet(gtid)
+		if err != nil {
+			return binlogPos, gs, errors.Trace(err)
 		}
-
 	}
 	if rows.Err() != nil {
-		return binlogPos, nil, errors.Trace(rows.Err())
+		return binlogPos, gs, errors.Trace(rows.Err())
 	}
 
-	return binlogPos, newGTIDs, nil
+	return binlogPos, gs, nil
 }

@@ -48,12 +48,12 @@ func (s *testSyncerSuite) TestIsRetryableError(c *C) {
 }
 
 func (s *testSyncerSuite) TestGetMasterStatus(c *C) {
-	binlogPos, gtids, err := getMasterStatus(s.db)
+	binlogPos, gtid, err := getMasterStatus(s.db)
 	c.Assert(err, IsNil)
 	c.Assert(binlogPos.Name, Not(Equals), "")
 	c.Assert(binlogPos.Pos, Not(Equals), 0)
 	// because master is reset.
-	c.Assert(len(gtids), Equals, 0)
+	c.Assert(gtid.all(), HasLen, 0)
 }
 
 func (s *testSyncerSuite) TestGetServerUUID(c *C) {
