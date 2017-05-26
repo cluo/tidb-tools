@@ -42,6 +42,10 @@ func (g GTIDSet) contain(uuid string) bool {
 	return ok
 }
 
+func (g GTIDSet) get(uuid string) *mysql.UUIDSet {
+	return g.Sets[uuid]
+}
+
 func (g GTIDSet) all() map[string]*mysql.UUIDSet {
 	return g.Sets
 }

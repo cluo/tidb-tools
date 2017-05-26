@@ -128,11 +128,10 @@ func masterGTIDGauge(gtidSet GTIDSet, db *sql.DB) {
 
 	sets := make(map[string]*mysql.UUIDSet)
 
-	uuidSet, ok := gtidSet.Sets[uuid]
-	if !ok {
-		sets = gtidSet.Sets
+	if gtidSet.contain(uuid) {
+		sets[uuid] = gtidSet.get(uuid)
 	} else {
-		sets[uuid] = uuidSet
+		sets = gtidSet.all()
 	}
 
 	for _, uuidSet := range sets {
