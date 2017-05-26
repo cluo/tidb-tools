@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -539,6 +540,7 @@ func (s *Syncer) sync(db *sql.DB, jobChan chan *job) {
 func (s *Syncer) run() (err error) {
 	defer func() {
 		if err1 := recover(); err1 != nil {
+			log.Errorf("panic. err: %s, stack: %s", err1, debug.Stack())
 			err = errors.Errorf("panic error: %v", err1)
 		}
 		if err1 := s.flushJobs(); err1 != nil {
@@ -995,7 +997,7 @@ func (s *Syncer) flushJobs() error {
 
 func (s *Syncer) reSyncBinlog(cfg *replication.BinlogSyncerConfig) (*replication.BinlogStreamer, bool, error) {
 	err := s.retrySyncGTIDs()
-	if err == nil {
+	if err != nil {
 		return nil, false, err
 	}
 	// close still running sync
