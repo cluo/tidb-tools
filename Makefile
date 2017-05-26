@@ -6,7 +6,7 @@ LDFLAGS += -X "github.com/pingcap/tidb-tools/pkg/utils.GitHash=$(shell git rev-p
 CURDIR   := $(shell pwd)
 GO       := GO15VENDOREXPERIMENT="1" go
 GOTEST   := GOPATH=$(CURDIR)/_vendor:$(GOPATH) CGO_ENABLED=1 $(GO) test
-PACKAGES := $$(go list ./... | grep -vE 'vendor|syncer')
+PACKAGES := $$(go list ./... | grep -vE 'vendor')
 
 .PHONY: build importer syncer checker loader dump_region test check deps
 
