@@ -1034,6 +1034,7 @@ func (s *Syncer) Close() {
 
 	closeDBs(s.fromDB)
 	closeDBs(s.toDBs...)
+	closeDBs(s.ddlDB)
 
 	if s.syncer != nil {
 		s.syncer.Close()
