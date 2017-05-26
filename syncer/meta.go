@@ -153,5 +153,5 @@ func (lm *LocalMeta) Check() bool {
 func (lm *LocalMeta) String() string {
 	pos := lm.Pos()
 	gs, _ := lm.GTID()
-	return fmt.Sprintf("syncer-binlog-name = (%s, %d), syncer-binlog-gtid = %v", pos.Name, pos.Pos, gs)
+	return fmt.Sprintf("syncer-binlog = (%s, %d), syncer-binlog-gtid = %v", pos.Name, pos.Pos, gs)
 }
