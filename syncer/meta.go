@@ -101,7 +101,7 @@ func (lm *LocalMeta) Save(pos mysql.Position, gs GTIDSet, force bool) error {
 
 	lm.BinLogName = pos.Name
 	lm.BinLogPos = pos.Pos
-	lm.BinlogGTID = getLatestGTID(gs, lm.serverUUID).String()
+	lm.BinlogGTID = gs.String()
 
 	if force {
 		return lm.Flush()
@@ -172,6 +172,5 @@ func (lm *LocalMeta) SetServerUUID(uuid string) {
 func (lm *LocalMeta) String() string {
 	pos := lm.Pos()
 	gs, _ := lm.GTID()
-	gs = getLatestGTID(gs, lm.serverUUID)
-	return fmt.Sprintf("binlog-name = %s, binlog-pos = %d, binlog-gtid = %v", pos.Name, pos.Pos, gs)
+	return fmt.Sprintf("syncer-binlog-name = (%s, %d), syncer-binlog-gtid = %v", pos.Name, pos.Pos, gs)
 }
