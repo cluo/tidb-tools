@@ -566,11 +566,6 @@ func (s *Syncer) run() (err error) {
 		return errors.Trace(err)
 	}
 
-	err = s.initializeServerUUID()
-	if err != nil {
-		return errors.Trace(err)
-	}
-
 	// support regex
 	s.genRegexMap()
 
@@ -794,21 +789,6 @@ func (s *Syncer) run() (err error) {
 	}
 }
 
-func (s *Syncer) initializeServerUUID() error {
-	uuid, err := s.getServerUUID()
-	if err != nil {
-		return errors.Trace(err)
-	}
-
-	localMeta, ok := s.meta.(*LocalMeta)
-	if !ok {
-		log.Warn("meta is not type of LocalMeta")
-		return nil
-	}
-	localMeta.SetServerUUID(uuid)
-	return nil
-}
-
 func (s *Syncer) commitJob(tp opType, sql string, args []interface{}, keys []string, retry bool, pos mysql.Position, gs GTIDSet) error {
 	key, err := s.resolveCasuality(keys)
 	if err != nil {
@@ -922,7 +902,11 @@ func (s *Syncer) printStatus() {
 				} else {
 					binlogPos.WithLabelValues("master").Set(float64(latestMasterPos.Pos))
 					binlogFile.WithLabelValues("master").Set(getBinlogIndex(latestMasterPos.Name))
-					latestMasterGTID = getLatestGTID(latestmasterGTIDSet, s.meta.GetServerUUID())
+					latestMasterGTID, err = getLatestGTID(latestmasterGTIDSet, s.fromDB)
+					if err != nil {
+						log.Errorf("[syncer] get server_uuid error %s", err)
+						continue
+					}
 					masterGTIDGauge(latestMasterGTID)
 				}
 			}

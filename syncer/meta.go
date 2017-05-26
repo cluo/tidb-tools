@@ -51,12 +51,6 @@ type Meta interface {
 
 	// GTID() returns gtid information.
 	GTID() (GTIDSet, error)
-
-	// ServerUUID returns mysql server_uuid
-	GetServerUUID() string
-
-	// SetServerUUID sets mysql server_uuid
-	SetServerUUID(uuid string)
 }
 
 // LocalMeta is local meta struct.
@@ -69,9 +63,6 @@ type LocalMeta struct {
 	BinLogName string `toml:"binlog-name" json:"binlog-name"`
 	BinLogPos  uint32 `toml:"binlog-pos" json:"binlog-pos"`
 	BinlogGTID string `toml:"binlog-gtid" json:"binlog-gtid"`
-
-	// mysql server uuid
-	serverUUID string
 }
 
 // NewLocalMeta creates a new LocalMeta.
@@ -157,16 +148,6 @@ func (lm *LocalMeta) Check() bool {
 	}
 
 	return false
-}
-
-// GetServerUUID implements Meta.ServerUUID interface.
-func (lm *LocalMeta) GetServerUUID() string {
-	return lm.serverUUID
-}
-
-// SetServerUUID sets server_uuid.
-func (lm *LocalMeta) SetServerUUID(uuid string) {
-	lm.serverUUID = uuid
 }
 
 func (lm *LocalMeta) String() string {
