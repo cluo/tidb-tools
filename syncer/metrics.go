@@ -14,6 +14,7 @@
 package main
 
 import (
+	"database/sql"
 	"net/http"
 	"strings"
 	// For pprof
@@ -23,6 +24,7 @@ import (
 	"github.com/ngaut/log"
 	"github.com/pingcap/tidb-tools/pkg/utils"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/siddontang/go-mysql/mysql"
 )
 
 var (
@@ -117,8 +119,23 @@ func getBinlogIndex(filename string) float64 {
 	return idx
 }
 
-func masterGTIDGauge(gtidSet GTIDSet) {
-	for _, uuidSet := range gtidSet.all() {
+func masterGTIDGauge(gtidSet GTIDSet, db *sql.DB) {
+	uuid, err := getServerUUID(db)
+	if err != nil {
+		log.Errorf("get server_uuid error %s", err)
+		return
+	}
+
+	sets := make(map[string]*mysql.UUIDSet)
+
+	uuidSet, ok := gtidSet.Sets[uuid]
+	if !ok {
+		sets = gtidSet.Sets
+	} else {
+		sets[uuid] = uuidSet
+	}
+
+	for _, uuidSet := range sets {
 		length := uuidSet.Intervals.Len()
 		maxInterval := uuidSet.Intervals[length-1]
 		// Why stop - 1? See github.com/siddontang/go-mysql parseInterval for more details.

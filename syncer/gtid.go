@@ -14,8 +14,6 @@
 package main
 
 import (
-	"database/sql"
-
 	"github.com/juju/errors"
 	"github.com/siddontang/go-mysql/mysql"
 )
@@ -46,23 +44,4 @@ func (g GTIDSet) contain(uuid string) bool {
 
 func (g GTIDSet) all() map[string]*mysql.UUIDSet {
 	return g.Sets
-}
-
-func getLatestGTID(gtidSet GTIDSet, db *sql.DB) (GTIDSet, error) {
-	uuid, err := getServerUUID(db)
-	if err != nil {
-		return GTIDSet{}, errors.Trace(err)
-	}
-
-	uuidSet, ok := gtidSet.Sets[uuid]
-	if !ok {
-		// return original gtidSet
-		return gtidSet, nil
-	}
-
-	s := new(mysql.MysqlGTIDSet)
-	s.Sets = make(map[string]*mysql.UUIDSet)
-	s.AddSet(uuidSet)
-
-	return GTIDSet{s}, nil
 }

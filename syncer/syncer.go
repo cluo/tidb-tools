@@ -871,7 +871,6 @@ func (s *Syncer) printStatus() {
 	var (
 		err                 error
 		latestMasterPos     mysql.Position
-		latestMasterGTID    GTIDSet
 		latestmasterGTIDSet GTIDSet
 	)
 
@@ -902,12 +901,7 @@ func (s *Syncer) printStatus() {
 				} else {
 					binlogPos.WithLabelValues("master").Set(float64(latestMasterPos.Pos))
 					binlogFile.WithLabelValues("master").Set(getBinlogIndex(latestMasterPos.Name))
-					latestMasterGTID, err = getLatestGTID(latestmasterGTIDSet, s.fromDB)
-					if err != nil {
-						log.Errorf("[syncer] get server_uuid error %s", err)
-						continue
-					}
-					masterGTIDGauge(latestMasterGTID)
+					masterGTIDGauge(latestmasterGTIDSet, s.fromDB)
 				}
 			}
 
