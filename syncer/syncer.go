@@ -927,7 +927,7 @@ func (s *Syncer) printStatus() {
 				}
 			}
 
-			log.Infof("[syncer]total events = %d, total tps = %d, recent tps = %d, master-binlog = %v, master-binlog-gtid=%v, %s,",
+			log.Infof("[syncer]total events = %d, total tps = %d, recent tps = %d, master-binlog = %v, master-binlog-gtid=%v, %s",
 				total, totalTps, tps, latestMasterPos, latestmasterGTIDSet, s.meta)
 
 			s.lastCount.Set(total)
