@@ -1041,12 +1041,12 @@ func (s *Syncer) fetchDDLTableNames(sql string, schema string) ([][]*TableName, 
 }
 
 func (s *Syncer) renameShardingSchema(schema, table string) (string, string) {
-	schema = strings.ToLower(schema)
-	table = strings.ToLower(table)
 	if schema == "" {
 		return schema, table
 	}
-	targetSchema, targetTable := s.tableRouter.Match(schema, table)
+	schemaL := strings.ToLower(schema)
+	tableL := strings.ToLower(table)
+	targetSchema, targetTable := s.tableRouter.Match(schemaL, tableL)
 	if targetSchema == "" {
 		return schema, table
 	}

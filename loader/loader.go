@@ -495,12 +495,12 @@ func renameShardingSchema(query, srcSchema, dstSchema string) string {
 }
 
 func fetchMatchedLiteral(router route.TableRouter, schema, table string) (targetSchema string, targetTable string) {
-	schema, table = toLower(schema, table)
 	if schema == "" {
 		// nothing change
 		return schema, table
 	}
-	targetSchema, targetTable = router.Match(schema, table)
+	schemaL, tableL := toLower(schema, table)
+	targetSchema, targetTable = router.Match(schemaL, tableL)
 	if targetSchema == "" {
 		// nothing change
 		return schema, table
