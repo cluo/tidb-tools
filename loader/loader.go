@@ -545,6 +545,10 @@ func (l *Loader) restoreData() error {
 	// restore db in sort
 	dbs := make([]string, 0, len(l.db2Tables))
 	for db := range l.db2Tables {
+		dstDB, _ := fetchMatchedLiteral(l.tableRouter, db, "")
+		if l.cfg.SourceDB != "" && dstDB != l.cfg.AlternativeDB {
+			continue
+		}
 		dbs = append(dbs, db)
 	}
 	sort.Strings(dbs)

@@ -47,6 +47,9 @@ func NewConfig() *Config {
 	fs.StringVar(&cfg.PprofAddr, "pprof-addr", ":10084", "Loader pprof addr")
 	fs.StringVar(&cfg.LogLevel, "L", "info", "Loader log level: debug, info, warn, error, fatal")
 
+	fs.StringVar(&cfg.AlternativeDB, "B", "", "An alternative database to restore into")
+	fs.StringVar(&cfg.SourceDB, "s", "", "Database to restore")
+
 	fs.StringVar(&cfg.configFile, "c", "", "config file")
 	fs.BoolVar(&cfg.printVersion, "V", false, "prints version and exit")
 
@@ -97,7 +100,9 @@ type Config struct {
 	SkipConstraintCheck int `toml:"skip-unique-check" json:"skip-unique-check"`
 	printVersion        bool
 
-	RouteRules []*RouteRule `toml:"route-rules" json:"route-rules"`
+	AlternativeDB string       `toml:"alternative-db" json:"alternative-db"`
+	SourceDB      string       `toml:"source-db" json:"source-db"`
+	RouteRules    []*RouteRule `toml:"route-rules" json:"route-rules"`
 }
 
 // RouteRule is the route rule for loading schema and table into specified schema and table.
@@ -139,16 +144,39 @@ func (c *Config) Parse(arguments []string) error {
 		return errors.Errorf("'%s' is an invalid flag", c.FlagSet.Arg(0))
 	}
 
+	if c.AlternativeDB == "" && c.SourceDB != "" {
+		c.AlternativeDB = c.SourceDB
+	}
+
 	c.adjust()
 
 	return nil
 }
 
 func (c *Config) adjust() {
+	routeRules := make([]*RouteRule, 0, len(c.RouteRules))
+	if c.SourceDB != "" {
+		rule := &RouteRule{
+			PatternSchema: strings.ToLower(c.SourceDB),
+			TargetSchema:  c.AlternativeDB,
+		}
+		routeRules = append(routeRules, rule)
+	}
+
 	for _, rule := range c.RouteRules {
+		if c.SourceDB != "" {
+			if rule.TargetSchema == c.SourceDB {
+				rule.TargetSchema = c.AlternativeDB
+				routeRules = append(routeRules, rule)
+			}
+			continue
+		}
 		rule.PatternSchema = strings.ToLower(rule.PatternSchema)
 		rule.PatternTable = strings.ToLower(rule.PatternTable)
+		routeRules = append(routeRules, rule)
 	}
+
+	c.RouteRules = routeRules
 }
 
 func (c *Config) String() string {
